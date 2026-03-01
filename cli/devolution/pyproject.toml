@@ -1,0 +1,17 @@
+[project]
+name = "devolution"
+version = "0.1.0"
+description = "CLI scripts para lectura de eventos y correo via GNOME/Evolution"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "PyGObject>=3.48",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff.lint.per-file-ignores]
+"devolution/sources.py" = ["E402"]
+"devolution/mail_reader.py" = ["E402"]
+"devolution/event_reader.py" = ["E402"]
