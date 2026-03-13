@@ -5,10 +5,11 @@ mod popup;
 mod state;
 
 use crate::config::AppConfig;
-use crate::domain::{SystemState, SystemProvider};
+use crate::domain::{SystemState, SystemProvider, WindowManager};
 use crate::popup::{PopupManager, PopupAction as InternalPopupAction};
 use crate::infrastructure::ipc::{IpcServer, IpcMessage, PopupAction as IpcPopupAction, send_message};
 use crate::infrastructure::sysfs::SysfsAdapter;
+use crate::infrastructure::niri::NiriAdapter;
 use clap::{Parser, Subcommand};
 use tokio::time::{interval, Duration};
 use tokio::sync::mpsc;
@@ -65,14 +66,17 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
     let mut popup_manager = PopupManager::new(config.popups.timeout_ms, tx);
     let ipc_server = IpcServer::new(&config.ipc.socket_path)?;
     let sys_adapter = SysfsAdapter::new("BAT0");
+    let niri_adapter = NiriAdapter::new();
     
     let mut state = SystemState::default();
     let mut poll_interval = interval(Duration::from_millis(config.polling.battery_ms));
     let mut popup_check = interval(Duration::from_millis(100));
+    let mut niri_events = NiriAdapter::event_listener().await?;
 
     loop {
         tokio::select! {
             _ = poll_interval.tick() => {
+                // Polling para sensores del sistema
                 if let Ok(bat) = sys_adapter.get_battery().await {
                     state.battery = bat;
                 }
@@ -81,6 +85,18 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
                 }
                 if let Ok(audio) = sys_adapter.get_audio().await {
                     state.audio = audio;
+                }
+
+                let json = serde_json::to_string(&state)?;
+                println!("{}", json);
+            }
+            Some(_) = niri_events.recv() => {
+                // Reactivo para eventos de Niri
+                if let Ok(workspaces) = niri_adapter.get_workspaces().await {
+                    state.desktop.workspaces = workspaces;
+                }
+                if let Ok(focused) = niri_adapter.get_focused_window().await {
+                    state.desktop.focused_window = focused;
                 }
 
                 let json = serde_json::to_string(&state)?;
