@@ -1,4 +1,4 @@
-use crate::domain::{WindowManager, Workspace};
+use crate::domain::{WindowManager, Workspace, Window};
 use async_trait::async_trait;
 use tokio::process::Command;
 use serde_json::Value;
@@ -75,17 +75,38 @@ impl WindowManager for NiriAdapter {
         Ok(workspaces)
     }
 
-    async fn get_focused_window(&self) -> anyhow::Result<Option<String>> {
+    async fn get_windows(&self) -> anyhow::Result<Vec<Window>> {
+        let output = Command::new("niri")
+            .args(["msg", "--json", "windows"])
+            .output()
+            .await?;
+        
+        let win_json: Vec<Value> = serde_json::from_slice(&output.stdout)?;
+
+        let windows = win_json.into_iter().map(|w| {
+            Window {
+                id: w["id"].as_u64().unwrap_or(0),
+                title: w["title"].as_str().unwrap_or("").to_string(),
+                app_id: w["app_id"].as_str().map(|s| s.to_string()),
+                workspace_id: w["workspace_id"].as_u64().unwrap_or(0),
+                is_focused: w["is_focused"].as_bool().unwrap_or(false),
+            }
+        }).collect();
+
+        Ok(windows)
+    }
+
+    async fn get_focused_window_id(&self) -> anyhow::Result<Option<u64>> {
         let output = Command::new("niri")
             .args(["msg", "--json", "windows"])
             .output()
             .await?;
         
         let windows: Vec<Value> = serde_json::from_slice(&output.stdout)?;
-        let focused = windows.into_iter()
+        let focused_id = windows.into_iter()
             .find(|w| w["is_focused"].as_bool().unwrap_or(false))
-            .map(|w| w["title"].as_str().unwrap_or("").to_string());
+            .map(|w| w["id"].as_u64().unwrap_or(0));
 
-        Ok(focused)
+        Ok(focused_id)
     }
 }

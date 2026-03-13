@@ -76,7 +76,6 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
     loop {
         tokio::select! {
             _ = poll_interval.tick() => {
-                // Polling para sensores del sistema
                 if let Ok(bat) = sys_adapter.get_battery().await {
                     state.battery = bat;
                 }
@@ -91,12 +90,14 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
                 println!("{}", json);
             }
             Some(_) = niri_events.recv() => {
-                // Reactivo para eventos de Niri
                 if let Ok(workspaces) = niri_adapter.get_workspaces().await {
                     state.desktop.workspaces = workspaces;
                 }
-                if let Ok(focused) = niri_adapter.get_focused_window().await {
-                    state.desktop.focused_window = focused;
+                if let Ok(windows) = niri_adapter.get_windows().await {
+                    state.desktop.windows = windows;
+                }
+                if let Ok(focused_id) = niri_adapter.get_focused_window_id().await {
+                    state.desktop.focused_window_id = focused_id;
                 }
 
                 let json = serde_json::to_string(&state)?;

@@ -26,7 +26,8 @@ pub struct NetworkState {
 #[derive(Debug, Serialize, Clone, Default)]
 pub struct DesktopState {
     pub workspaces: Vec<Workspace>,
-    pub focused_window: Option<String>,
+    pub windows: Vec<Window>,
+    pub focused_window_id: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Clone, Default, serde::Deserialize)]
@@ -35,6 +36,15 @@ pub struct Workspace {
     pub active: bool,
     pub windows_count: u32,
     pub output: String,
+}
+
+#[derive(Debug, Serialize, Clone, Default, serde::Deserialize)]
+pub struct Window {
+    pub id: u64,
+    pub title: String,
+    pub app_id: Option<String>,
+    pub workspace_id: u64,
+    pub is_focused: bool,
 }
 
 #[derive(Debug, Serialize, Clone, Default)]
@@ -46,7 +56,8 @@ pub struct AudioState {
 #[async_trait]
 pub trait WindowManager: Send + Sync {
     async fn get_workspaces(&self) -> anyhow::Result<Vec<Workspace>>;
-    async fn get_focused_window(&self) -> anyhow::Result<Option<String>>;
+    async fn get_windows(&self) -> anyhow::Result<Vec<Window>>;
+    async fn get_focused_window_id(&self) -> anyhow::Result<Option<u64>>;
 }
 
 #[async_trait]
