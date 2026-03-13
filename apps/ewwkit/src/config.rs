@@ -1,0 +1,51 @@
+use config::{Config, ConfigError, Environment, File};
+use serde::Deserialize;
+use std::env;
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct AppConfig {
+    pub popups: PopupsConfig,
+    pub polling: PollingConfig,
+    pub niri: NiriConfig,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct PopupsConfig {
+    pub timeout_ms: u64,
+    pub exclusivity: bool,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct PollingConfig {
+    pub battery_ms: u64,
+    pub network_ms: u64,
+    pub audio_ms: u64,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct NiriConfig {
+    pub socket_path: Option<String>,
+}
+
+impl AppConfig {
+    pub fn new() -> Result<Self, ConfigError> {
+        let run_mode = env::var("RUN_MODE").unwrap_or_else(|_| "development".into());
+
+        let s = Config::builder()
+            // Configuración por defecto
+            .set_default("popups.timeout_ms", 3000u64)?
+            .set_default("popups.exclusivity", true)?
+            .set_default("polling.battery_ms", 5000u64)?
+            .set_default("polling.network_ms", 2000u64)?
+            .set_default("polling.audio_ms", 1000u64)?
+            .set_default("niri.socket_path", None::<String>)?
+            // Carga de archivo config/default.toml (opcional)
+            .add_source(File::with_name("config/default").required(false))
+            .add_source(File::with_name(&format!("config/{}", run_mode)).required(false))
+            // Carga de variables de entorno con prefijo EWWKIT_
+            .add_source(Environment::with_prefix("EWWKIT").separator("__"))
+            .build()?;
+
+        s.try_deserialize()
+    }
+}
