@@ -5,9 +5,10 @@ mod popup;
 mod state;
 
 use crate::config::AppConfig;
-use crate::domain::SystemState;
+use crate::domain::{SystemState, SystemProvider};
 use crate::popup::{PopupManager, PopupAction as InternalPopupAction};
 use crate::infrastructure::ipc::{IpcServer, IpcMessage, PopupAction as IpcPopupAction, send_message};
+use crate::infrastructure::sysfs::SysfsAdapter;
 use clap::{Parser, Subcommand};
 use tokio::time::{interval, Duration};
 use tokio::sync::mpsc;
@@ -63,14 +64,25 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
     let (tx, mut rx) = mpsc::channel::<String>(32);
     let mut popup_manager = PopupManager::new(config.popups.timeout_ms, tx);
     let ipc_server = IpcServer::new(&config.ipc.socket_path)?;
+    let sys_adapter = SysfsAdapter::new("BAT0");
     
-    let state = SystemState::default();
+    let mut state = SystemState::default();
     let mut poll_interval = interval(Duration::from_millis(config.polling.battery_ms));
     let mut popup_check = interval(Duration::from_millis(100));
 
     loop {
         tokio::select! {
             _ = poll_interval.tick() => {
+                if let Ok(bat) = sys_adapter.get_battery().await {
+                    state.battery = bat;
+                }
+                if let Ok(net) = sys_adapter.get_network().await {
+                    state.network = net;
+                }
+                if let Ok(audio) = sys_adapter.get_audio().await {
+                    state.audio = audio;
+                }
+
                 let json = serde_json::to_string(&state)?;
                 println!("{}", json);
             }
@@ -78,11 +90,10 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
                 let _ = popup_manager.check_timeouts().await;
             }
             Some(cmd) = rx.recv() => {
-                // Ejecutar comando real de EWW
                 let args: Vec<&str> = cmd.split_whitespace().collect();
                 if args.len() >= 2 {
                     let _ = Command::new("eww")
-                        .args(["-c", "legacy", args[0], args[1]]) // Usamos legacy por ahora para pruebas
+                        .args(["-c", "legacy", args[0], args[1]])
                         .spawn();
                 }
             }
