@@ -74,6 +74,8 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
     let niri_adapter = NiriAdapter::new(&config.niri.socket_path);
     
     let mut state = SystemState::default();
+    let mut last_emitted_state = SystemState::default();
+    
     let mut poll_interval = interval(Duration::from_millis(config.polling.battery_ms));
     let mut popup_check = interval(Duration::from_millis(100));
     let niri_socket_path = config.niri.socket_path.clone().unwrap_or_else(|| {
@@ -135,6 +137,12 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
                     let _ = popup_manager.handle_action(internal_action).await;
                 }
             }
+        }
+
+        // Deduplicación en la capa de aplicación
+        if state_changed && state != last_emitted_state {
+            let _ = presenter.update_state(&state).await;
+            last_emitted_state = state.clone();
         }
     }
 }
