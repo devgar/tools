@@ -1,7 +1,7 @@
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use async_trait::async_trait;
 
-#[derive(Debug, Serialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct SystemState {
     pub battery: BatteryState,
     pub network: NetworkState,
@@ -9,28 +9,28 @@ pub struct SystemState {
     pub audio: AudioState,
 }
 
-#[derive(Debug, Serialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct BatteryState {
     pub level: u8,
     pub status: String,
     pub icon: String,
 }
 
-#[derive(Debug, Serialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct NetworkState {
     pub wifi_ssid: String,
     pub signal: u8,
     pub icon: String,
 }
 
-#[derive(Debug, Serialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct DesktopState {
     pub workspaces: Vec<Workspace>,
     pub windows: Vec<Window>,
     pub focused_window_id: Option<u64>,
 }
 
-#[derive(Debug, Serialize, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct Workspace {
     pub id: u32,
     pub active: bool,
@@ -38,7 +38,7 @@ pub struct Workspace {
     pub output: String,
 }
 
-#[derive(Debug, Serialize, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct Window {
     pub id: u64,
     pub title: String,
@@ -47,10 +47,26 @@ pub struct Window {
     pub is_focused: bool,
 }
 
-#[derive(Debug, Serialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct AudioState {
     pub volume: u8,
     pub muted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PresentationAction {
+    Open(String),
+    Close(String),
+    Toggle(String),
+}
+
+#[async_trait]
+pub trait Presenter: Send + Sync {
+    /// Update the overall UI state
+    async fn update_state(&self, state: &SystemState) -> anyhow::Result<()>;
+    
+    /// Handle a specific UI action
+    async fn execute_action(&self, action: PresentationAction) -> anyhow::Result<()>;
 }
 
 #[async_trait]
