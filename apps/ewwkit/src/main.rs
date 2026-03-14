@@ -31,6 +31,8 @@ enum Commands {
         #[command(subcommand)]
         action: ActionCommands,
     },
+    /// Lista todas las ventanas
+    Windows,
 }
 
 #[derive(Subcommand, Debug)]
@@ -56,6 +58,9 @@ async fn main() -> anyhow::Result<()> {
         Commands::Action { action } => {
             handle_action(config, action).await?;
         }
+        Commands::Windows => {
+            list_windows(config).await?;
+        }
     }
 
     Ok(())
@@ -66,12 +71,18 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
     let mut popup_manager = PopupManager::new(config.popups.timeout_ms, tx);
     let ipc_server = IpcServer::new(&config.ipc.socket_path)?;
     let sys_adapter = SysfsAdapter::new("BAT0");
-    let niri_adapter = NiriAdapter::new();
+    let niri_adapter = NiriAdapter::new(&config.niri.socket_path);
     
     let mut state = SystemState::default();
     let mut poll_interval = interval(Duration::from_millis(config.polling.battery_ms));
     let mut popup_check = interval(Duration::from_millis(100));
-    let mut niri_events = NiriAdapter::event_listener().await?;
+    let niri_socket_path = config.niri.socket_path.clone().unwrap_or_else(|| {
+        std::env::var("NIRI_SOCKET").unwrap_or_else(|_| {
+            let xdg_runtime = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".to_string());
+            format!("{}/niri-0", xdg_runtime)
+        })
+    });
+    let mut niri_events = NiriAdapter::event_listener(niri_socket_path).await?;
 
     loop {
         tokio::select! {
@@ -143,5 +154,15 @@ async fn handle_action(config: AppConfig, action: ActionCommands) -> anyhow::Res
     };
 
     send_message(&config.ipc.socket_path, &msg)?;
+    Ok(())
+}
+
+async fn list_windows(config: AppConfig) -> anyhow::Result<()> {
+    let niri_adapter = NiriAdapter::new(&config.niri.socket_path);
+    let windows = niri_adapter.get_windows().await?;
+    for win in windows {
+        println!("Window ID: {}, Title: {}, App ID: {:?}, Workspace ID: {}, Focused: {}", 
+            win.id, win.title, win.app_id, win.workspace_id, win.is_focused);
+    }
     Ok(())
 }
