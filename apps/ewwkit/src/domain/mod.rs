@@ -47,7 +47,8 @@ pub struct Output {
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct Workspace {
-    pub id: u32,
+    pub id: u64,
+    pub idx: u32,
     pub active: bool,
     pub windows: Vec<Window>,
 }

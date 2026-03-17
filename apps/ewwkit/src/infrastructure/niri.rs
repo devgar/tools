@@ -161,18 +161,19 @@ impl WindowManager for NiriAdapter {
         let mut outputs_map: HashMap<String, Vec<Workspace>> = HashMap::new();
 
         for ws in ws_array {
-            let internal_id = ws["id"].as_u64().unwrap_or(0);
+            let id = ws["id"].as_u64().unwrap_or(0);
             let idx = ws["idx"].as_u64().unwrap_or(0) as u32;
             let active = ws["is_active"].as_bool().unwrap_or(false);
             let output_name = ws["output"].as_str().unwrap_or("").to_string();
 
             let ws_windows = all_windows.iter()
-                .filter(|(_, ws_id, _, _)| *ws_id == internal_id)
+                .filter(|(_, ws_id, _, _)| *ws_id == id)
                 .map(|(win, _, _, _)| win.clone())
                 .collect::<Vec<Window>>();
 
             let workspace = Workspace {
-                id: idx,
+                id,
+                idx,
                 active,
                 windows: ws_windows,
             };
