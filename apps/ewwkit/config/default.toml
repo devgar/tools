@@ -1,0 +1,12 @@
+[popups]
+timeout_ms = 3000
+exclusivity = true
+
+[polling]
+battery_ms = 5000
+network_ms = 10000
+audio_ms = 2000
+
+[ipc]
+socket_path = "/tmp/ewwkit.sock"
+

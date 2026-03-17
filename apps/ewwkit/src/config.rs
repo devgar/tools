@@ -7,6 +7,7 @@ pub struct AppConfig {
     pub popups: PopupsConfig,
     pub polling: PollingConfig,
     pub niri: NiriConfig,
+    pub ipc: IpcConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -27,6 +28,11 @@ pub struct NiriConfig {
     pub socket_path: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct IpcConfig {
+    pub socket_path: String,
+}
+
 impl AppConfig {
     pub fn new() -> Result<Self, ConfigError> {
         let run_mode = env::var("RUN_MODE").unwrap_or_else(|_| "development".into());
@@ -39,6 +45,7 @@ impl AppConfig {
             .set_default("polling.network_ms", 2000u64)?
             .set_default("polling.audio_ms", 1000u64)?
             .set_default("niri.socket_path", None::<String>)?
+            .set_default("ipc.socket_path", "/tmp/ewwkit.sock".to_string())?
             // Carga de archivo config/default.toml (opcional)
             .add_source(File::with_name("config/default").required(false))
             .add_source(File::with_name(&format!("config/{}", run_mode)).required(false))
