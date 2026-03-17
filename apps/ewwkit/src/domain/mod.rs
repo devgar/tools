@@ -1,9 +1,10 @@
 use serde::{Serialize, Deserialize};
 use async_trait::async_trait;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
-pub struct SystemState {
-    pub system: SystemMetrics,
+pub struct AppState {
+    pub system: SystemState,
     pub desktop: DesktopState,
     pub ui: UiState,
 }
@@ -14,7 +15,7 @@ pub struct UiState {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
-pub struct SystemMetrics {
+pub struct SystemState {
     pub battery: BatteryState,
     pub network: NetworkState,
     pub audio: AudioState,
@@ -36,25 +37,24 @@ pub struct NetworkState {
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct DesktopState {
-    pub outputs: Vec<Output>,
+    pub outputs: BTreeMap<String, OutputState>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
-pub struct Output {
-    pub name: String,
-    pub workspaces: Vec<Workspace>,
+pub struct OutputState {
+    pub workspaces: Vec<WorkspaceState>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
-pub struct Workspace {
+pub struct WorkspaceState {
     pub id: u64,
     pub idx: u32,
     pub active: bool,
-    pub windows: Vec<Window>,
+    pub windows: Vec<WindowState>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
-pub struct Window {
+pub struct WindowState {
     pub id: u64,
     pub title: String,
     pub app_id: Option<String>,
@@ -86,7 +86,7 @@ pub enum PresentationAction {
 #[async_trait]
 pub trait Presenter: Send + Sync {
     /// Update the overall UI state
-    async fn update_state(&self, state: &SystemState) -> anyhow::Result<()>;
+    async fn update_state(&self, state: &AppState) -> anyhow::Result<()>;
     
     /// Handle a specific UI action
     async fn execute_action(&self, action: PresentationAction) -> anyhow::Result<()>;

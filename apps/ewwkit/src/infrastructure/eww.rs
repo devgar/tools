@@ -1,4 +1,4 @@
-use crate::domain::{Presenter, PresentationAction, SystemState};
+use crate::domain::{AppState, Presenter, PresentationAction};
 use async_trait::async_trait;
 use std::process::Command;
 use serde_json;
@@ -17,7 +17,7 @@ impl EwwPresenter {
 
 #[async_trait]
 impl Presenter for EwwPresenter {
-    async fn update_state(&self, state: &SystemState) -> anyhow::Result<()> {
+    async fn update_state(&self, state: &AppState) -> anyhow::Result<()> {
         let json = serde_json::to_string(state)?;
         println!("{}", json);
         Ok(())
