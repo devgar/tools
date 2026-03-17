@@ -25,17 +25,20 @@ pub struct NetworkState {
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct DesktopState {
+    pub outputs: Vec<Output>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+pub struct Output {
+    pub name: String,
     pub workspaces: Vec<Workspace>,
-    pub windows: Vec<Window>,
-    pub focused_window_id: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct Workspace {
     pub id: u32,
     pub active: bool,
-    pub windows_count: u32,
-    pub output: String,
+    pub windows: Vec<Window>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
@@ -43,8 +46,8 @@ pub struct Window {
     pub id: u64,
     pub title: String,
     pub app_id: Option<String>,
-    pub workspace_id: u64,
     pub is_focused: bool,
+    pub app_icon: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
@@ -71,9 +74,7 @@ pub trait Presenter: Send + Sync {
 
 #[async_trait]
 pub trait WindowManager: Send + Sync {
-    async fn get_workspaces(&self) -> anyhow::Result<Vec<Workspace>>;
-    async fn get_windows(&self) -> anyhow::Result<Vec<Window>>;
-    async fn get_focused_window_id(&self) -> anyhow::Result<Option<u64>>;
+    async fn get_desktop_state(&self) -> anyhow::Result<DesktopState>;
 }
 
 #[async_trait]

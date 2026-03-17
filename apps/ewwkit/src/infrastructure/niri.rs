@@ -1,17 +1,21 @@
-use crate::domain::{WindowManager, Workspace, Window};
+use crate::domain::{WindowManager, Workspace, Window, DesktopState, Output};
+use crate::infrastructure::icons::IconResolver;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::os::unix::net::UnixStream;
 use std::io::{BufRead, BufReader, Write};
 use std::env;
 use tokio::io::AsyncBufReadExt;
+use std::cmp::Ordering;
+use std::collections::HashMap;
 
 pub struct NiriAdapter {
     socket_path: String,
+    icon_resolver: IconResolver,
 }
 
 impl NiriAdapter {
-    pub fn new(config_socket_path: &Option<String>) -> Self {
+    pub fn new(config_socket_path: &Option<String>, icon_dir: &str) -> Self {
         let socket_path = config_socket_path.clone().unwrap_or_else(|| {
             match env::var("NIRI_SOCKET") {
                 Ok(path) => path,
@@ -33,7 +37,10 @@ impl NiriAdapter {
         });
 
         
-        Self { socket_path }
+        Self { 
+            socket_path,
+            icon_resolver: IconResolver::new(icon_dir),
+        }
     }
 
     fn send_request(&self, request: &str) -> anyhow::Result<Value> {
@@ -100,65 +107,86 @@ impl NiriAdapter {
 
 #[async_trait]
 impl WindowManager for NiriAdapter {
-    async fn get_workspaces(&self) -> anyhow::Result<Vec<Workspace>> {
+    async fn get_desktop_state(&self) -> anyhow::Result<DesktopState> {
         let ws_json = self.send_request("Workspaces")?;
-        let ws_array = ws_json.as_array().ok_or_else(|| anyhow::anyhow!("Expected array for Workspaces, got: {}", ws_json))?;
+        let ws_array = ws_json.as_array().ok_or_else(|| anyhow::anyhow!("Expected array for Workspaces"))?;
 
         let win_json = self.send_request("Windows")?;
-        let default_wins = vec![];
-        let win_array = win_json.as_array().unwrap_or(&default_wins);
+        let win_array = win_json.as_array().ok_or_else(|| anyhow::anyhow!("Expected array for Windows"))?;
 
-        let workspaces = ws_array.iter().map(|w| {
-            let internal_id = w["id"].as_u64().unwrap_or(0);
-            let idx = w["idx"].as_u64().unwrap_or(0) as u32;
-            let active = w["is_active"].as_bool().unwrap_or(false);
-            let output_name = w["output"].as_str().unwrap_or("").to_string();
+        // 1. Parse and sort all windows
+        let mut all_windows = win_array.iter().map(|w| {
+            let app_id = w["app_id"].as_str().map(|s| s.to_string());
+            let app_icon = self.icon_resolver.resolve(&app_id);
             
-            let count = win_array.iter()
-                .filter(|win| win["workspace_id"].as_u64() == Some(internal_id))
-                .count() as u32;
+            (
+                Window {
+                    id: w["id"].as_u64().unwrap_or(0),
+                    title: w["title"].as_str().unwrap_or("").to_string(),
+                    app_id,
+                    is_focused: w["is_focused"].as_bool().unwrap_or(false),
+                    app_icon,
+                },
+                w["workspace_id"].as_u64().unwrap_or(0),
+                w["layout"]["pos_in_scrolling_layout"].as_array().map(|a| {
+                    (a[0].as_i64().unwrap_or(0), a[1].as_i64().unwrap_or(0))
+                }),
+                w["layout"]["tile_pos_in_workspace_view"].as_array().map(|a| {
+                    (a[0].as_f64().unwrap_or(0.0), a[1].as_f64().unwrap_or(0.0))
+                })
+            )
+        }).collect::<Vec<_>>();
 
-            Workspace {
+        // Sort by layout priority
+        all_windows.sort_by(|a, b| {
+            match (&a.2, &b.2) {
+                (Some(pos_a), Some(pos_b)) => pos_a.cmp(pos_b),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => {
+                    match (&a.3, &b.3) {
+                        (Some(pos_a), Some(pos_b)) => {
+                            pos_a.0.partial_cmp(&pos_b.0).unwrap_or(Ordering::Equal)
+                                .then(pos_a.1.partial_cmp(&pos_b.1).unwrap_or(Ordering::Equal))
+                        },
+                        (Some(_), None) => Ordering::Less,
+                        (None, Some(_)) => Ordering::Greater,
+                        (None, None) => Ordering::Equal,
+                    }
+                }
+            }
+        });
+
+        // 2. Group workspaces by output
+        let mut outputs_map: HashMap<String, Vec<Workspace>> = HashMap::new();
+
+        for ws in ws_array {
+            let internal_id = ws["id"].as_u64().unwrap_or(0);
+            let idx = ws["idx"].as_u64().unwrap_or(0) as u32;
+            let active = ws["is_active"].as_bool().unwrap_or(false);
+            let output_name = ws["output"].as_str().unwrap_or("").to_string();
+
+            let ws_windows = all_windows.iter()
+                .filter(|(_, ws_id, _, _)| *ws_id == internal_id)
+                .map(|(win, _, _, _)| win.clone())
+                .collect::<Vec<Window>>();
+
+            let workspace = Workspace {
                 id: idx,
                 active,
-                windows_count: count,
-                output: output_name,
-            }
-        }).collect();
+                windows: ws_windows,
+            };
 
-        Ok(workspaces)
-    }
-
-    async fn get_windows(&self) -> anyhow::Result<Vec<Window>> {
-        let win_json = self.send_request("Windows")?;
-        let win_array = win_json.as_array().ok_or_else(|| anyhow::anyhow!("Expected array for Windows, got: {}", win_json))?;
-
-        let windows = win_array.iter().map(|w| {
-            Window {
-                id: w["id"].as_u64().unwrap_or(0),
-                title: w["title"].as_str().unwrap_or("").to_string(),
-                app_id: w["app_id"].as_str().map(|s| s.to_string()),
-                workspace_id: w["workspace_id"].as_u64().unwrap_or(0),
-                is_focused: w["is_focused"].as_bool().unwrap_or(false),
-            }
-        }).collect();
-
-        Ok(windows)
-    }
-
-    async fn get_focused_window_id(&self) -> anyhow::Result<Option<u64>> {
-        let win_json = self.send_request("FocusedWindow")?;
-        
-        // Si FocusedWindow devuelve null (ninguna ventana enfocada)
-        if win_json.is_null() {
-            return Ok(None);
+            outputs_map.entry(output_name).or_insert_with(Vec::new).push(workspace);
         }
 
-        // Si devuelve el objeto de la ventana directamente
-        if let Some(id) = win_json["id"].as_u64() {
-            return Ok(Some(id));
-        }
+        let mut outputs = outputs_map.into_iter().map(|(name, mut workspaces)| {
+            workspaces.sort_by_key(|w| w.id);
+            Output { name, workspaces }
+        }).collect::<Vec<Output>>();
 
-        Ok(None)
+        outputs.sort_by_key(|o| o.name.clone());
+
+        Ok(DesktopState { outputs })
     }
 }

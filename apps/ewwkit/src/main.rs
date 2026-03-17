@@ -71,10 +71,10 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
     let mut popup_manager = PopupManager::new(config.popups.timeout_ms, tx);
     let ipc_server = IpcServer::new(&config.ipc.socket_path)?;
     let sys_adapter = SysfsAdapter::new("BAT0");
-    let niri_adapter = NiriAdapter::new(&config.niri.socket_path);
+    let niri_adapter = NiriAdapter::new(&config.niri.socket_path, "ui/images/icons");
     
     // El presenter ahora está abstraído. Usamos eww por defecto.
-    let presenter: Box<dyn Presenter> = Box::new(EwwPresenter::new("legacy"));
+    let presenter: Box<dyn Presenter> = Box::new(EwwPresenter::new("ui"));
     
     let mut state = SystemState::default();
     let mut last_emitted_state = SystemState::default();
@@ -116,21 +116,9 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
                 }
             }
             Some(_) = niri_events.recv() => {
-                if let Ok(workspaces) = niri_adapter.get_workspaces().await {
-                    if state.desktop.workspaces != workspaces {
-                        state.desktop.workspaces = workspaces;
-                        state_changed = true;
-                    }
-                }
-                if let Ok(windows) = niri_adapter.get_windows().await {
-                    if state.desktop.windows != windows {
-                        state.desktop.windows = windows;
-                        state_changed = true;
-                    }
-                }
-                if let Ok(focused_id) = niri_adapter.get_focused_window_id().await {
-                    if state.desktop.focused_window_id != focused_id {
-                        state.desktop.focused_window_id = focused_id;
+                if let Ok(desktop) = niri_adapter.get_desktop_state().await {
+                    if state.desktop != desktop {
+                        state.desktop = desktop;
                         state_changed = true;
                     }
                 }
@@ -188,11 +176,17 @@ async fn handle_action(config: AppConfig, action: ActionCommands) -> anyhow::Res
 }
 
 async fn list_windows(config: AppConfig) -> anyhow::Result<()> {
-    let niri_adapter = NiriAdapter::new(&config.niri.socket_path);
-    let windows = niri_adapter.get_windows().await?;
-    for win in windows {
-        println!("Window ID: {}, Title: {}, App ID: {:?}, Workspace ID: {}, Focused: {}", 
-            win.id, win.title, win.app_id, win.workspace_id, win.is_focused);
+    let niri_adapter = NiriAdapter::new(&config.niri.socket_path, "ui/images/icons");
+    let desktop = niri_adapter.get_desktop_state().await?;
+    for output in desktop.outputs {
+        println!("Output: {}", output.name);
+        for ws in output.workspaces {
+            println!("  Workspace {}:", ws.id);
+            for win in ws.windows {
+                println!("    Window ID: {}, Title: {}, App ID: {:?}, Icon: {}, Focused: {}", 
+                    win.id, win.title, win.app_id, win.app_icon, win.is_focused);
+            }
+        }
     }
     Ok(())
 }
