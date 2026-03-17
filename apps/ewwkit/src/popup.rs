@@ -1,72 +1,84 @@
-use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
-use anyhow::Result;
+use crate::domain::PopupState;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[derive(Debug, Clone)]
 pub enum PopupAction {
-    Open(String),
-    Close(String),
-    KeepAlive(String),
+    Open {
+        name: String,
+        output: String,
+        timeout: Option<Duration>,
+    },
+    Close,
+    KeepAlive,
 }
 
 pub struct PopupManager {
-    current_popup: Option<(String, Instant)>,
-    timeout: Duration,
-    tx: mpsc::Sender<String>, // Para enviar comandos de cierre a EWW
+    current_popup: Option<InternalPopup>,
+}
+
+struct InternalPopup {
+    name: String,
+    output: String,
+    opened_at: Instant,
+    timeout: Option<Duration>,
+    system_start_time: u64,
 }
 
 impl PopupManager {
-    pub fn new(timeout_ms: u64, tx: mpsc::Sender<String>) -> Self {
+    pub fn new() -> Self {
         Self {
             current_popup: None,
-            timeout: Duration::from_millis(timeout_ms),
-            tx,
         }
     }
 
-    pub async fn handle_action(&mut self, action: PopupAction) -> Result<()> {
+    pub fn handle_action(&mut self, action: PopupAction) {
         match action {
-            PopupAction::Open(name) => {
-                // Exclusividad
-                if let Some((current_name, _)) = &self.current_popup {
-                    if *current_name != name {
-                        let n = current_name.clone();
-                        self.close_popup(n).await?;
-                    }
-                }
-                self.open_popup(name).await?;
+            PopupAction::Open {
+                name,
+                output,
+                timeout,
+            } => {
+                let now = Instant::now();
+                let system_now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+
+                self.current_popup = Some(InternalPopup {
+                    name,
+                    output,
+                    opened_at: now,
+                    timeout,
+                    system_start_time: system_now,
+                });
             }
-            PopupAction::Close(name) => {
-                self.close_popup(name).await?;
+            PopupAction::Close => {
+                self.current_popup = None;
             }
-            PopupAction::KeepAlive(name) => {
-                if let Some((current_name, expiry)) = &mut self.current_popup {
-                    if *current_name == name {
-                        *expiry = Instant::now() + self.timeout;
-                    }
+            PopupAction::KeepAlive => {
+                if let Some(popup) = &mut self.current_popup {
+                    popup.opened_at = Instant::now();
                 }
             }
         }
-        Ok(())
     }
 
-    async fn open_popup(&mut self, name: String) -> Result<String> {
-        self.current_popup = Some((name.clone(), Instant::now() + self.timeout));
-        Ok(format!("open {}", name))
-    }
-
-    async fn close_popup(&mut self, name: String) -> Result<()> {
-        self.current_popup = None;
-        self.tx.send(format!("close {}", name)).await?;
-        Ok(())
-    }
-
-    pub async fn check_timeouts(&mut self) -> Result<()> {
-        if let Some((name, expiry)) = &self.current_popup {
-            if Instant::now() > *expiry {
-                let n = name.clone();
-                self.close_popup(n).await?;
+    pub fn check_timeouts(&mut self) {
+        if let Some(popup) = &self.current_popup {
+            if let Some(timeout) = popup.timeout {
+                if popup.opened_at.elapsed() >= timeout {
+                    self.current_popup = None;
+                }
             }
         }
-        Ok(())
+    }
+
+    pub fn get_state(&self) -> Option<PopupState> {
+        self.current_popup.as_ref().map(|p| PopupState {
+            name: p.name.clone(),
+            output: p.output.clone(),
+            opened_at: p.system_start_time,
+            timeout_ms: p.timeout.map(|d| d.as_millis() as u64),
+        })
     }
 }

@@ -5,6 +5,12 @@ use async_trait::async_trait;
 pub struct SystemState {
     pub system: SystemMetrics,
     pub desktop: DesktopState,
+    pub ui: UiState,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+pub struct UiState {
+    pub popup: Option<PopupState>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
@@ -59,6 +65,14 @@ pub struct Window {
 pub struct AudioState {
     pub volume: u8,
     pub muted: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+pub struct PopupState {
+    pub name: String,
+    pub output: String,
+    pub opened_at: u64,
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

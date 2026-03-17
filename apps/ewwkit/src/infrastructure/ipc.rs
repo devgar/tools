@@ -6,7 +6,11 @@ use std::path::Path;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum IpcMessage {
-    Popup { name: String, action: PopupAction },
+    Popup {
+        name: String,
+        output: Option<String>,
+        action: PopupAction,
+    },
     GetState,
 }
 

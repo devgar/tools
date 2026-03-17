@@ -5,7 +5,7 @@ mod popup;
 mod state;
 
 use crate::config::AppConfig;
-use crate::domain::{SystemState, SystemProvider, WindowManager, Presenter, PresentationAction};
+use crate::domain::{SystemState, SystemProvider, WindowManager, Presenter};
 use crate::popup::{PopupManager, PopupAction as InternalPopupAction};
 use crate::infrastructure::ipc::{IpcServer, IpcMessage, PopupAction as IpcPopupAction, send_message};
 use crate::infrastructure::sysfs::SysfsAdapter;
@@ -13,7 +13,6 @@ use crate::infrastructure::niri::NiriAdapter;
 use crate::infrastructure::eww::EwwPresenter;
 use clap::{Parser, Subcommand};
 use tokio::time::{interval, Duration};
-use tokio::sync::mpsc;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -40,8 +39,10 @@ enum ActionCommands {
     Popup {
         name: String,
         #[arg(short, long)]
+        output: Option<String>,
+        #[arg(short, long)]
         close: bool,
-        #[arg(short, long, name = "keep_alive_flag")]
+        #[arg(short, long)]
         keep_alive: bool,
     },
 }
@@ -56,7 +57,7 @@ async fn main() -> anyhow::Result<()> {
             run_daemon(config).await?;
         }
         Commands::Action { action } => {
-            handle_action(config, action).await?;
+            handle_action(&config, action).await?;
         }
         Commands::Windows => {
             list_windows(config).await?;
@@ -67,8 +68,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
-    let (tx, mut rx) = mpsc::channel::<String>(32);
-    let mut popup_manager = PopupManager::new(config.popups.timeout_ms, tx);
+    let mut popup_manager = PopupManager::new();
     let ipc_server = IpcServer::new(&config.ipc.socket_path)?;
     let sys_adapter = SysfsAdapter::new("BAT0");
     let niri_adapter = NiriAdapter::new(&config.niri.socket_path, "ui/images/icons");
@@ -117,34 +117,41 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
             }
             Some(_) = niri_events.recv() => {
                 if let Ok(desktop) = niri_adapter.get_desktop_state().await {
-                    if state.desktop != desktop {
-                        state.desktop = desktop;
+                    if state.desktop.outputs != desktop.outputs {
+                        state.desktop.outputs = desktop.outputs;
                         state_changed = true;
                     }
                 }
             }
             _ = popup_check.tick() => {
-                let _ = popup_manager.check_timeouts().await;
-            }
-            Some(cmd) = rx.recv() => {
-                let args: Vec<&str> = cmd.split_whitespace().collect();
-                if args.len() >= 2 {
-                    let action = match args[0] {
-                        "open" => PresentationAction::Open(args[1].to_string()),
-                        "close" => PresentationAction::Close(args[1].to_string()),
-                        _ => continue,
-                    };
-                    let _ = presenter.execute_action(action).await;
+                let old_popup = popup_manager.get_state();
+                popup_manager.check_timeouts();
+                let new_popup = popup_manager.get_state();
+                if old_popup != new_popup {
+                    state.ui.popup = new_popup;
+                    state_changed = true;
                 }
             }
             msg = async { Some(ipc_server.accept_message()) } => {
-                if let Some(Some(IpcMessage::Popup { name, action })) = msg {
+                if let Some(Some(IpcMessage::Popup { name, output, action })) = msg {
                     let internal_action = match action {
-                        IpcPopupAction::Open => InternalPopupAction::Open(name),
-                        IpcPopupAction::Close => InternalPopupAction::Close(name),
-                        IpcPopupAction::KeepAlive => InternalPopupAction::KeepAlive(name),
+                        IpcPopupAction::Open => {
+                            let output = output.unwrap_or_else(|| {
+                                // Fallback a la primera salida si no se especifica
+                                state.desktop.outputs.first().map(|o| o.name.clone()).unwrap_or_else(|| "eDP-1".to_string())
+                            });
+                            InternalPopupAction::Open {
+                                name,
+                                output,
+                                timeout: Some(Duration::from_millis(config.popups.timeout_ms)),
+                            }
+                        },
+                        IpcPopupAction::Close => InternalPopupAction::Close,
+                        IpcPopupAction::KeepAlive => InternalPopupAction::KeepAlive,
                     };
-                    let _ = popup_manager.handle_action(internal_action).await;
+                    popup_manager.handle_action(internal_action);
+                    state.ui.popup = popup_manager.get_state();
+                    state_changed = true;
                 }
             }
         }
@@ -157,9 +164,9 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
     }
 }
 
-async fn handle_action(config: AppConfig, action: ActionCommands) -> anyhow::Result<()> {
+async fn handle_action(config: &AppConfig, action: ActionCommands) -> anyhow::Result<()> {
     let msg = match action {
-        ActionCommands::Popup { name, close, keep_alive } => {
+        ActionCommands::Popup { name, output, close, keep_alive } => {
             let action = if close {
                 IpcPopupAction::Close
             } else if keep_alive {
@@ -167,7 +174,7 @@ async fn handle_action(config: AppConfig, action: ActionCommands) -> anyhow::Res
             } else {
                 IpcPopupAction::Open
             };
-            IpcMessage::Popup { name, action }
+            IpcMessage::Popup { name, output, action }
         }
     };
 
