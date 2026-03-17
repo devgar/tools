@@ -1,0 +1,23 @@
+{
+  "name": "gar",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "react": "^19",
+    "react-dom": "^19"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@opentui/core": "^0.1.84",
+    "@opentui/react": "^0.1.84"
+  },
+  "scripts": {
+    "dev": "bun run app.tsx"
+  }
+}

@@ -1,0 +1,9 @@
+version: "3.8"
+services:
+  web:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+  worker:
+    image: alpine
+    command: ["sh", "-c", "while true; do echo 'info doing work'; sleep 2; echo 'warn memory high'; sleep 2; echo 'error panic!'; sleep 3; done"]
