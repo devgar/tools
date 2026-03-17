@@ -103,3 +103,86 @@ pub trait SystemProvider: Send + Sync {
     async fn get_network(&self) -> anyhow::Result<NetworkState>;
     async fn get_audio(&self) -> anyhow::Result<AudioState>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_state_serializes_with_outputs_keyed_by_output_name() {
+        let mut state = AppState {
+            system: SystemState {
+                battery: BatteryState {
+                    level: 87,
+                    status: "Discharging".to_string(),
+                    icon: "battery-icon".to_string(),
+                },
+                network: NetworkState {
+                    wifi_ssid: "my-wifi".to_string(),
+                    signal: 72,
+                    icon: "wifi-icon".to_string(),
+                },
+                audio: AudioState {
+                    volume: 45,
+                    muted: false,
+                },
+            },
+            desktop: DesktopState::default(),
+            ui: UiState {
+                popup: Some(PopupState {
+                    name: "dashboard".to_string(),
+                    output: "HDMI-A-1".to_string(),
+                    opened_at: 42,
+                    timeout_ms: Some(3_000),
+                }),
+            },
+        };
+
+        state.desktop.outputs.insert(
+            "HDMI-A-1".to_string(),
+            OutputState {
+                workspaces: vec![WorkspaceState {
+                    id: 3,
+                    idx: 3,
+                    active: true,
+                    windows: vec![WindowState {
+                        id: 10,
+                        title: "Terminal".to_string(),
+                        app_id: Some("kitty".to_string()),
+                        is_focused: true,
+                        app_icon: "kitty.svg".to_string(),
+                    }],
+                }],
+            },
+        );
+
+        let json = serde_json::to_value(&state).expect("state must serialize");
+
+        assert!(json.get("system").is_some());
+        assert!(json.get("desktop").is_some());
+        assert!(json.get("ui").is_some());
+
+        let outputs = json
+            .get("desktop")
+            .and_then(|desktop| desktop.get("outputs"))
+            .expect("desktop.outputs must exist");
+
+        assert!(outputs.is_object(), "desktop.outputs must be a JSON object");
+        assert!(
+            outputs.get("HDMI-A-1").is_some(),
+            "desktop.outputs must contain key per output name"
+        );
+
+        let output_state = outputs
+            .get("HDMI-A-1")
+            .expect("output key must map to an output state");
+        assert!(
+            output_state.get("workspaces").is_some(),
+            "output state must contain workspaces field"
+        );
+        assert!(
+            output_state.get("name").is_none(),
+            "output state must not contain legacy name field"
+        );
+    }
+}
