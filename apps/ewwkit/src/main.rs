@@ -5,7 +5,7 @@ mod popup;
 mod state;
 
 use crate::config::AppConfig;
-use crate::domain::{SystemState, SystemProvider, WindowManager, Presenter};
+use crate::domain::{AppState, Presenter, SystemProvider, WindowManager};
 use crate::popup::{PopupManager, PopupAction as InternalPopupAction};
 use crate::infrastructure::ipc::{IpcServer, IpcMessage, PopupAction as IpcPopupAction, send_message};
 use crate::infrastructure::sysfs::SysfsAdapter;
@@ -76,8 +76,8 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
     // El presenter ahora está abstraído. Usamos eww por defecto.
     let presenter: Box<dyn Presenter> = Box::new(EwwPresenter::new("ui"));
     
-    let mut state = SystemState::default();
-    let mut last_emitted_state = SystemState::default();
+    let mut state = AppState::default();
+    let mut last_emitted_state = AppState::default();
     
     let mut poll_interval = interval(Duration::from_millis(config.polling.battery_ms));
     let mut popup_check = interval(Duration::from_millis(100));
@@ -138,7 +138,7 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
                         IpcPopupAction::Open => {
                             let output = output.unwrap_or_else(|| {
                                 // Fallback a la primera salida si no se especifica
-                                state.desktop.outputs.first().map(|o| o.name.clone()).unwrap_or_else(|| "eDP-1".to_string())
+                                state.desktop.outputs.keys().next().cloned().unwrap_or_else(|| "eDP-1".to_string())
                             });
                             InternalPopupAction::Open {
                                 name,
@@ -185,9 +185,9 @@ async fn handle_action(config: &AppConfig, action: ActionCommands) -> anyhow::Re
 async fn list_windows(config: AppConfig) -> anyhow::Result<()> {
     let niri_adapter = NiriAdapter::new(&config.niri.socket_path, "ui/images/icons");
     let desktop = niri_adapter.get_desktop_state().await?;
-    for output in desktop.outputs {
-        println!("Output: {}", output.name);
-        for ws in output.workspaces {
+    for (output_name, output_state) in desktop.outputs {
+        println!("Output: {}", output_name);
+        for ws in output_state.workspaces {
             println!("  Workspace {}:", ws.id);
             for win in ws.windows {
                 println!("    Window ID: {}, Title: {}, App ID: {:?}, Icon: {}, Focused: {}", 

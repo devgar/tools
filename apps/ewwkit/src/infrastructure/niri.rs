@@ -1,4 +1,4 @@
-use crate::domain::{WindowManager, Workspace, Window, DesktopState, Output};
+use crate::domain::{DesktopState, OutputState, WindowManager, WindowState, WorkspaceState};
 use crate::infrastructure::icons::IconResolver;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -7,7 +7,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::env;
 use tokio::io::AsyncBufReadExt;
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 pub struct NiriAdapter {
     socket_path: String,
@@ -120,7 +120,7 @@ impl WindowManager for NiriAdapter {
             let app_icon = self.icon_resolver.resolve(&app_id);
             
             (
-                Window {
+                WindowState {
                     id: w["id"].as_u64().unwrap_or(0),
                     title: w["title"].as_str().unwrap_or("").to_string(),
                     app_id,
@@ -158,21 +158,22 @@ impl WindowManager for NiriAdapter {
         });
 
         // 2. Group workspaces by output
-        let mut outputs_map: HashMap<String, Vec<Workspace>> = HashMap::new();
+        let mut outputs_map: BTreeMap<String, Vec<WorkspaceState>> = BTreeMap::new();
 
         for ws in ws_array {
-            let internal_id = ws["id"].as_u64().unwrap_or(0);
+            let id = ws["id"].as_u64().unwrap_or(0);
             let idx = ws["idx"].as_u64().unwrap_or(0) as u32;
             let active = ws["is_active"].as_bool().unwrap_or(false);
             let output_name = ws["output"].as_str().unwrap_or("").to_string();
 
             let ws_windows = all_windows.iter()
-                .filter(|(_, ws_id, _, _)| *ws_id == internal_id)
+                .filter(|(_, ws_id, _, _)| *ws_id == id)
                 .map(|(win, _, _, _)| win.clone())
-                .collect::<Vec<Window>>();
+                .collect::<Vec<WindowState>>();
 
-            let workspace = Workspace {
-                id: idx,
+            let workspace = WorkspaceState {
+                id,
+                idx,
                 active,
                 windows: ws_windows,
             };
@@ -180,12 +181,16 @@ impl WindowManager for NiriAdapter {
             outputs_map.entry(output_name).or_insert_with(Vec::new).push(workspace);
         }
 
-        let mut outputs = outputs_map.into_iter().map(|(name, mut workspaces)| {
+        for workspaces in outputs_map.values_mut() {
             workspaces.sort_by_key(|w| w.id);
-            Output { name, workspaces }
-        }).collect::<Vec<Output>>();
+        }
 
-        outputs.sort_by_key(|o| o.name.clone());
+        let outputs = outputs_map
+            .into_iter()
+            .map(|(name, workspaces)| {
+                (name, OutputState { workspaces })
+            })
+            .collect::<BTreeMap<String, OutputState>>();
 
         Ok(DesktopState { outputs })
     }
