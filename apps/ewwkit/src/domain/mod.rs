@@ -3,9 +3,14 @@ use async_trait::async_trait;
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct SystemState {
+    pub system: SystemMetrics,
+    pub desktop: DesktopState,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+pub struct SystemMetrics {
     pub battery: BatteryState,
     pub network: NetworkState,
-    pub desktop: DesktopState,
     pub audio: AudioState,
 }
 

@@ -97,20 +97,20 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
         tokio::select! {
             _ = poll_interval.tick() => {
                 if let Ok(bat) = sys_adapter.get_battery().await {
-                    if state.battery != bat {
-                        state.battery = bat;
+                    if state.system.battery != bat {
+                        state.system.battery = bat;
                         state_changed = true;
                     }
                 }
                 if let Ok(net) = sys_adapter.get_network().await {
-                    if state.network != net {
-                        state.network = net;
+                    if state.system.network != net {
+                        state.system.network = net;
                         state_changed = true;
                     }
                 }
                 if let Ok(audio) = sys_adapter.get_audio().await {
-                    if state.audio != audio {
-                        state.audio = audio;
+                    if state.system.audio != audio {
+                        state.system.audio = audio;
                         state_changed = true;
                     }
                 }
