@@ -79,7 +79,9 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
     let mut state = AppState::default();
     let mut last_emitted_state = AppState::default();
     
-    let mut poll_interval = interval(Duration::from_millis(config.polling.battery_ms));
+    let mut battery_poll = interval(Duration::from_millis(config.polling.battery_ms));
+    let mut net_poll = interval(Duration::from_secs(10)); // Wifi cada 10s
+    let mut audio_poll = interval(Duration::from_millis(500)); // Audio cada 0.5s
     let mut popup_check = interval(Duration::from_millis(100));
     
     let niri_socket_path = config.niri.socket_path.clone().unwrap_or_else(|| {
@@ -95,19 +97,23 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
         let mut state_changed = false;
 
         tokio::select! {
-            _ = poll_interval.tick() => {
+            _ = battery_poll.tick() => {
                 if let Ok(bat) = sys_adapter.get_battery().await {
                     if state.system.battery != bat {
                         state.system.battery = bat;
                         state_changed = true;
                     }
                 }
+            }
+            _ = net_poll.tick() => {
                 if let Ok(net) = sys_adapter.get_network().await {
                     if state.system.network != net {
                         state.system.network = net;
                         state_changed = true;
                     }
                 }
+            }
+            _ = audio_poll.tick() => {
                 if let Ok(audio) = sys_adapter.get_audio().await {
                     if state.system.audio != audio {
                         state.system.audio = audio;
