@@ -138,8 +138,8 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
                     state_changed = true;
                 }
             }
-            msg = async { Some(ipc_server.accept_message()) } => {
-                if let Some(Some(IpcMessage::Popup { name, output, action })) = msg {
+            msg = ipc_server.accept_message() => {
+                if let Some(IpcMessage::Popup { name, output, action }) = msg {
                     let internal_action = match action {
                         IpcPopupAction::Open => {
                             let output = output.unwrap_or_else(|| {
@@ -184,7 +184,7 @@ async fn handle_action(config: &AppConfig, action: ActionCommands) -> anyhow::Re
         }
     };
 
-    send_message(&config.ipc.socket_path, &msg)?;
+    send_message(&config.ipc.socket_path, &msg).await?;
     Ok(())
 }
 
