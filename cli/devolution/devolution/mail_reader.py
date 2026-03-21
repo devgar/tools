@@ -13,7 +13,7 @@ from gi.repository import EDataServer
 
 from devolution.sources import find_source, get_oauth2_access_token
 
-DEFAULT_ACCOUNT_FILTER = os.getenv("DEFAULT_ACCOUNT_FILTER")
+DEFAULT_ACCOUNT_FILTER = os.getenv("DEFAULT_ACCOUNT_FILTER", "icareweb.com")
 DEFAULT_MAX_RESULTS = 10
 DEFAULT_IMAP_HOST = "imap.gmail.com"
 

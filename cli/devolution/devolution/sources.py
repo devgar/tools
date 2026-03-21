@@ -12,7 +12,7 @@ def new_registry() -> EDataServer.SourceRegistry:
 
 def find_source(account_filter: str, extension: int):
     registry = new_registry()
-    token = account_filter.lower()
+    token = (account_filter or "").lower()
     sources = registry.list_sources(extension)
 
     for source in sources:

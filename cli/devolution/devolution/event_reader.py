@@ -12,7 +12,9 @@ from gi.repository import ECal, EDataServer
 
 from devolution.sources import new_registry
 
-DEFAULT_ACCOUNT_FILTER = os.getenv("DEFAULT_ACCOUNT_FILTER")
+DEFAULT_ACCOUNT_FILTER = os.getenv(
+    "DEFAULT_ACCOUNT_FILTER", "edgar.albalate@icareweb.com"
+)
 
 
 @dataclass
@@ -76,9 +78,9 @@ def get_event_rows(account_filter: str) -> list[EventRow]:
     rows = []
 
     for source in sources:
-        uid = source.get_uid() or ""
+        uid = (source.get_uid() or "").lower()
         display_name = (source.get_display_name() or "").lower()
-        if account_filter.lower() not in [uid.lower(), display_name]:
+        if account_filter and account_filter.lower() not in [uid, display_name]:
             continue
 
         client = ECal.Client.connect_sync(

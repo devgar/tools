@@ -2,18 +2,13 @@
 
 import argparse
 
-from devolution.mail_reader import (
-    DEFAULT_ACCOUNT_FILTER,
-    DEFAULT_IMAP_HOST,
-    DEFAULT_MAX_RESULTS,
-    list_mail,
-)
-from devolution.renderers import OUTPUT_FORMATS, render_mail_rows
+from devolution.task_reader import DEFAULT_ACCOUNT_FILTER, DEFAULT_MAX_RESULTS, list_tasks
+from devolution.renderers import OUTPUT_FORMATS, render_tasks
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Lista correos desde GNOME/Evolution en modo solo lectura"
+        description="Lista Google Tasks desde GNOME/Evolution en modo solo lectura"
     )
     parser.add_argument(
         "--account",
@@ -25,17 +20,18 @@ def _parse_args() -> argparse.Namespace:
         "--max-results",
         default=DEFAULT_MAX_RESULTS,
         type=int,
-        help="Numero maximo de correos a mostrar",
+        help="Numero maximo de tareas a mostrar por lista",
     )
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Incluye tambien correos leidos (por defecto solo no leidos)",
+        help="Incluye tambien tareas completadas (por defecto solo pendientes)",
     )
     parser.add_argument(
-        "--imap-host",
-        default=DEFAULT_IMAP_HOST,
-        help="Servidor IMAP (por defecto imap.gmail.com)",
+        "--list",
+        dest="tasklist",
+        default=None,
+        help="Filtro por nombre de lista de tareas",
     )
     parser.add_argument(
         "--format",
@@ -49,21 +45,21 @@ def _parse_args() -> argparse.Namespace:
 def main() -> int:
     args = _parse_args()
     try:
-        rows = list_mail(
+        rows = list_tasks(
             account_filter=args.account,
             max_results=max(1, args.max_results),
-            unread_only=not args.all,
-            imap_host=args.imap_host,
+            show_completed=args.all,
+            tasklist_filter=args.tasklist,
         )
     except Exception as exc:
         print(f"Error: {exc}")
         return 1
 
     if not rows:
-        print("No se encontraron correos para los filtros indicados.")
+        print("No se encontraron tareas para los filtros indicados.")
         return 0
 
-    for line in render_mail_rows(rows, output_format=args.format):
+    for line in render_tasks(rows, output_format=args.format):
         print(line)
     return 0
 
