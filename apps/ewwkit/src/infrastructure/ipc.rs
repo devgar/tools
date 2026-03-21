@@ -9,16 +9,10 @@ pub enum IpcMessage {
     Popup {
         name: String,
         output: Option<String>,
-        action: PopupAction,
+        keep: bool,
     },
+    ClosePopup,
     GetState,
-}
-
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum PopupAction {
-    Open,
-    Close,
-    KeepAlive,
 }
 
 pub async fn send_message(socket_path: &str, msg: &IpcMessage) -> anyhow::Result<()> {

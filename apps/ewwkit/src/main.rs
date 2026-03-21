@@ -7,7 +7,7 @@ mod state;
 use crate::config::AppConfig;
 use crate::domain::{AppState, Presenter, SystemProvider, WindowManager};
 use crate::popup::{PopupManager, PopupAction as InternalPopupAction};
-use crate::infrastructure::ipc::{IpcServer, IpcMessage, PopupAction as IpcPopupAction, send_message};
+use crate::infrastructure::ipc::{IpcServer, IpcMessage, send_message};
 use crate::infrastructure::sysfs::SysfsAdapter;
 use crate::infrastructure::niri::NiriAdapter;
 use crate::infrastructure::eww::EwwPresenter;
@@ -36,15 +36,16 @@ enum Commands {
 
 #[derive(Subcommand, Debug)]
 enum ActionCommands {
+    /// Open a popup
     Popup {
         name: String,
         #[arg(short, long)]
         output: Option<String>,
         #[arg(short, long)]
-        close: bool,
-        #[arg(short, long)]
-        keep_alive: bool,
+        keep: bool,
     },
+    /// Close the current popup
+    ClosePopup,
 }
 
 #[tokio::main]
@@ -139,25 +140,27 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
                 }
             }
             msg = ipc_server.accept_message() => {
-                if let Some(IpcMessage::Popup { name, output, action }) = msg {
-                    let internal_action = match action {
-                        IpcPopupAction::Open => {
-                            let output = output.unwrap_or_else(|| {
-                                // Fallback a la primera salida si no se especifica
-                                state.desktop.outputs.keys().next().cloned().unwrap_or_else(|| "eDP-1".to_string())
-                            });
-                            InternalPopupAction::Open {
-                                name,
-                                output,
-                                timeout: Some(Duration::from_millis(config.popups.timeout_ms)),
-                            }
-                        },
-                        IpcPopupAction::Close => InternalPopupAction::Close,
-                        IpcPopupAction::KeepAlive => InternalPopupAction::KeepAlive,
-                    };
-                    popup_manager.handle_action(internal_action);
-                    state.ui.popup = popup_manager.get_state();
-                    state_changed = true;
+                match msg {
+                    Some(IpcMessage::Popup { name, output, keep }) => {
+                        let output = output.unwrap_or_else(|| {
+                            state.desktop.outputs.keys().next().cloned().unwrap_or_else(|| "eDP-1".to_string())
+                        });
+                        let timeout = if keep {
+                            None
+                        } else {
+                            Some(Duration::from_millis(config.popups.timeout_ms))
+                        };
+                        
+                        popup_manager.handle_action(InternalPopupAction::Open { name, output, timeout });
+                        state.ui.popup = popup_manager.get_state();
+                        state_changed = true;
+                    }
+                    Some(IpcMessage::ClosePopup) => {
+                        popup_manager.handle_action(InternalPopupAction::Close);
+                        state.ui.popup = popup_manager.get_state();
+                        state_changed = true;
+                    }
+                    _ => {}
                 }
             }
         }
@@ -172,15 +175,11 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
 
 async fn handle_action(config: &AppConfig, action: ActionCommands) -> anyhow::Result<()> {
     let msg = match action {
-        ActionCommands::Popup { name, output, close, keep_alive } => {
-            let action = if close {
-                IpcPopupAction::Close
-            } else if keep_alive {
-                IpcPopupAction::KeepAlive
-            } else {
-                IpcPopupAction::Open
-            };
-            IpcMessage::Popup { name, output, action }
+        ActionCommands::Popup { name, output, keep } => {
+            IpcMessage::Popup { name, output, keep }
+        }
+        ActionCommands::ClosePopup => {
+            IpcMessage::ClosePopup
         }
     };
 
