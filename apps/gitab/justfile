@@ -1,0 +1,41 @@
+# giTab - GitLab Tab Favicon Extension
+
+# Development mode (Chrome)
+dev:
+    bun run dev
+
+# Development mode (Firefox)
+dev-firefox:
+    bun run dev:firefox
+
+# Build for Chrome
+build:
+    bun run build
+
+# Build for Firefox
+build-firefox:
+    bun run build:firefox
+
+# Package for Chrome Web Store
+zip:
+    bun run zip
+
+# Package for Firefox AMO
+zip-firefox:
+    bun run zip:firefox
+
+# Run tests
+test:
+    bun run test
+
+# Run tests in watch mode
+test-watch:
+    bun run test:watch
+
+# Install dependencies
+install:
+    bun install
+
+# Prepare WXT types
+prepare:
+    bun run postinstall
