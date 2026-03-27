@@ -163,6 +163,7 @@ impl WindowManager for NiriAdapter {
         for ws in ws_array {
             let id = ws["id"].as_u64().unwrap_or(0);
             let idx = ws["idx"].as_u64().unwrap_or(0) as u32;
+            let name = ws["name"].as_str().map(String::from);
             let active = ws["is_active"].as_bool().unwrap_or(false);
             let output_name = ws["output"].as_str().unwrap_or("").to_string();
 
@@ -174,6 +175,7 @@ impl WindowManager for NiriAdapter {
             let workspace = WorkspaceState {
                 id,
                 idx,
+                name,
                 active,
                 windows: ws_windows,
             };
@@ -182,7 +184,7 @@ impl WindowManager for NiriAdapter {
         }
 
         for workspaces in outputs_map.values_mut() {
-            workspaces.sort_by_key(|w| w.id);
+            workspaces.sort_by_key(|w| w.idx);
         }
 
         let outputs = outputs_map
