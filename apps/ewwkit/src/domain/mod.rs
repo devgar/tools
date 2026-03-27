@@ -49,6 +49,7 @@ pub struct OutputState {
 pub struct WorkspaceState {
     pub id: u64,
     pub idx: u32,
+    pub name: Option<String>,
     pub active: bool,
     pub windows: Vec<WindowState>,
 }
