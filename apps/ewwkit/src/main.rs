@@ -5,7 +5,7 @@ mod popup;
 mod state;
 
 use crate::config::AppConfig;
-use crate::domain::{AppState, Presenter, SystemProvider, WindowManager};
+use crate::domain::{AppState, PopupState, Presenter, SystemProvider, WindowManager};
 use crate::popup::{PopupManager, PopupAction as InternalPopupAction};
 use crate::infrastructure::ipc::{IpcServer, IpcMessage, send_message};
 use crate::infrastructure::sysfs::SysfsAdapter;
@@ -118,6 +118,17 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
                 if let Ok(audio) = sys_adapter.get_audio().await {
                     if state.system.audio != audio {
                         state.system.audio = audio;
+                        popup_manager.handle_action(InternalPopupAction::Open {
+                            name: "volume".to_string(),
+                            output: state.desktop.outputs.keys().next().cloned().unwrap_or_else(|| "eDP-1".to_string()),
+                            timeout: Some(Duration::from_millis(config.popups.timeout_ms)),
+                        });
+                        state.ui.popup = Some(PopupState {
+                            name: "volume".to_string(),
+                            output: state.desktop.outputs.keys().next().cloned().unwrap_or_else(|| "eDP-1".to_string()),
+                            opened_at: chrono::Utc::now().timestamp_millis() as u64,
+                            timeout_ms: Some(config.popups.timeout_ms),
+                        });
                         state_changed = true;
                     }
                 }
