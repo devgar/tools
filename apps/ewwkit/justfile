@@ -1,0 +1,61 @@
+alias i := install
+alias r := run
+alias rd := run-daemon
+alias ra := run-action
+alias b := build
+alias t := test
+alias rel := release
+alias rl := release-local
+
+run:
+	cargo run -- daemon
+
+run-daemon:
+	cargo run -- daemon
+
+run-action:
+	cargo run -- action
+
+build:
+	cargo build --release
+
+# Build, strip and package the release binary into a tarball
+package: build
+	#!/usr/bin/env bash
+	set -euo pipefail
+	version=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)
+	strip target/release/ewwkit
+	cp target/release/ewwkit ewwkit
+	tar -czf "ewwkit-v${version}-x86_64-linux.tar.gz" ewwkit config/
+	sha256sum "ewwkit-v${version}-x86_64-linux.tar.gz" > checksums.txt
+	rm ewwkit
+	echo "→ ewwkit-v${version}-x86_64-linux.tar.gz"
+
+install:
+	cargo install --path .
+
+test:
+	cargo test
+
+# Trigger a release via GitHub Actions — creates a release branch and lets CI do the rest
+# Usage: just release major|minor|patch
+release bump:
+	#!/usr/bin/env bash
+	set -euo pipefail
+	if [[ ! "{{bump}}" =~ ^(major|minor|patch)$ ]]; then
+	  echo "Error: argument must be major, minor or patch" >&2
+	  exit 1
+	fi
+	branch="release/apps/ewwkit/{{bump}}"
+	git checkout -b "$branch"
+	git push origin "$branch"
+	git checkout -
+
+# Bump version locally without triggering CI (requires cargo-bump)
+# Usage: just release-local major|minor|patch
+release-local bump:
+	#!/usr/bin/env bash
+	set -euo pipefail
+	cargo bump {{bump}}
+	version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+	echo "→ v$version"

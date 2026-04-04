@@ -1,0 +1,105 @@
+name: Release ewwkit
+
+on:
+  push:
+    branches:
+      - "release/apps/ewwkit/*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Release ewwkit
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Parse bump type from branch name
+        id: bump
+        run: |
+          BUMP="${GITHUB_REF_NAME##*/}"
+          [[ "$BUMP" =~ ^(major|minor|patch)$ ]] \
+            || { echo "::error::Branch must end in major, minor or patch"; exit 1; }
+          echo "type=$BUMP" >> "$GITHUB_OUTPUT"
+
+      - name: Check for changes since last tag
+        id: changes
+        run: |
+          LAST_TAG=$(git tag -l "ewwkit-v*" --sort=-version:refname | head -1)
+          COUNT=$(git log "${LAST_TAG:-HEAD~1}"..HEAD --oneline -- apps/ewwkit/ | wc -l | tr -d ' ')
+          echo "Commits since ${LAST_TAG:-"(none)"}: $COUNT"
+          [[ "$COUNT" -gt 0 ]] || { echo "::warning::No changes since $LAST_TAG, skipping."; }
+          echo "has_changes=$([[ $COUNT -gt 0 ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.changes.outputs.has_changes == 'true'
+
+      - uses: actions/cache@v4
+        if: steps.changes.outputs.has_changes == 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/ewwkit/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('apps/ewwkit/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - uses: cargo-bins/cargo-binstall@v1.17.9
+        if: steps.changes.outputs.has_changes == 'true'
+
+      - name: Install cargo-bump & just
+        if: steps.changes.outputs.has_changes == 'true'
+        run: cargo binstall cargo-bump just --no-confirm
+
+      - name: Bump version
+        if: steps.changes.outputs.has_changes == 'true'
+        id: version
+        working-directory: apps/ewwkit
+        run: |
+          cargo bump ${{ steps.bump.outputs.type }}
+          echo "next=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Package
+        if: steps.changes.outputs.has_changes == 'true'
+        working-directory: apps/ewwkit
+        run: just package
+
+      - name: Commit, tag & push to main
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          git add apps/ewwkit/Cargo.toml
+          git commit -m "chore(apps/ewwkit): bump version to ${{ steps.version.outputs.next }}"
+          git tag "ewwkit-v${{ steps.version.outputs.next }}"
+          git push origin HEAD:${{ github.event.repository.default_branch }}
+          git push origin "ewwkit-v${{ steps.version.outputs.next }}"
+
+      - name: Create GitHub Release
+        if: steps.changes.outputs.has_changes == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "ewwkit-v${{ steps.version.outputs.next }}"
+          name: "ewwkit v${{ steps.version.outputs.next }}"
+          body: |
+            Binary release for Linux x86_64.
+
+            ```sh
+            tar -xzf ewwkit-v${{ steps.version.outputs.next }}-x86_64-linux.tar.gz
+            sudo install -Dm755 ewwkit /usr/local/bin/ewwkit
+            ```
+          files: |
+            apps/ewwkit/ewwkit-v${{ steps.version.outputs.next }}-x86_64-linux.tar.gz
+            apps/ewwkit/checksums.txt
+
+      - name: Delete release branch
+        if: always()
+        run: git push origin --delete "${GITHUB_REF_NAME}" || true
