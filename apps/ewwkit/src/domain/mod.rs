@@ -146,6 +146,7 @@ mod tests {
                     id: 3,
                     idx: 3,
                     active: true,
+                    name: None,
                     windows: vec![WindowState {
                         id: 10,
                         title: "Terminal".to_string(),
