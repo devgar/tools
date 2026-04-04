@@ -25,10 +25,10 @@ package: build
 	set -euo pipefail
 	version=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)
 	strip target/release/ewwkit
-	cp target/release/ewwkit ewwkit
-	tar -czf "ewwkit-v${version}-x86_64-linux.tar.gz" ewwkit config/
-	sha256sum "ewwkit-v${version}-x86_64-linux.tar.gz" > checksums.txt
-	rm ewwkit
+	cp target/release/ewwkit "ewwkit-v${version}-x86_64-linux"
+	tar -czf "ewwkit-v${version}-x86_64-linux.tar.gz" "ewwkit-v${version}-x86_64-linux" config/
+	sha256sum "ewwkit-v${version}-x86_64-linux" "ewwkit-v${version}-x86_64-linux.tar.gz" > checksums.txt
+	echo "→ ewwkit-v${version}-x86_64-linux"
 	echo "→ ewwkit-v${version}-x86_64-linux.tar.gz"
 
 install:
