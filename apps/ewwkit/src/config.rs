@@ -63,3 +63,33 @@ mod duration_ms {
         Ok(Duration::from_millis(u64::deserialize(d)?))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Deserialize;
+    use std::time::Duration;
+
+    #[derive(Deserialize)]
+    struct W {
+        #[serde(with = "duration_ms")]
+        value: Duration,
+    }
+
+    #[test]
+    fn duration_ms_deserializes_typical_value() {
+        let w: W = serde_json::from_str(r#"{"value": 3000}"#).unwrap();
+        assert_eq!(w.value, Duration::from_millis(3000));
+    }
+
+    #[test]
+    fn duration_ms_deserializes_zero() {
+        let w: W = serde_json::from_str(r#"{"value": 0}"#).unwrap();
+        assert_eq!(w.value, Duration::ZERO);
+    }
+
+    #[test]
+    fn duration_ms_rejects_non_integer() {
+        assert!(serde_json::from_str::<W>(r#"{"value": "3s"}"#).is_err());
+    }
+}

@@ -76,3 +76,87 @@ impl PopupManager {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn open(name: &str, output: &str, timeout: Option<Duration>) -> PopupAction {
+        PopupAction::Open {
+            name: name.to_string(),
+            output: output.to_string(),
+            timeout,
+        }
+    }
+
+    #[test]
+    fn new_manager_has_no_state() {
+        assert!(PopupManager::new().get_state().is_none());
+    }
+
+    #[test]
+    fn open_sets_name_output_and_timeout() {
+        let mut pm = PopupManager::new();
+        pm.handle_action(open("volume", "HDMI-1", Some(Duration::from_millis(3000))));
+        let s = pm.get_state().expect("popup must be set");
+        assert_eq!(s.name, "volume");
+        assert_eq!(s.output, "HDMI-1");
+        assert_eq!(s.timeout_ms, Some(3000));
+    }
+
+    #[test]
+    fn open_without_timeout_has_no_timeout_ms() {
+        let mut pm = PopupManager::new();
+        pm.handle_action(open("dashboard", "DP-1", None));
+        assert_eq!(pm.get_state().unwrap().timeout_ms, None);
+    }
+
+    #[test]
+    fn open_replaces_existing_popup() {
+        let mut pm = PopupManager::new();
+        pm.handle_action(open("volume", "HDMI-1", None));
+        pm.handle_action(open("brightness", "DP-1", None));
+        let s = pm.get_state().unwrap();
+        assert_eq!(s.name, "brightness");
+        assert_eq!(s.output, "DP-1");
+    }
+
+    #[test]
+    fn close_clears_state() {
+        let mut pm = PopupManager::new();
+        pm.handle_action(open("volume", "HDMI-1", None));
+        pm.handle_action(PopupAction::Close);
+        assert!(pm.get_state().is_none());
+    }
+
+    #[test]
+    fn close_on_empty_manager_is_a_noop() {
+        let mut pm = PopupManager::new();
+        pm.handle_action(PopupAction::Close);
+        assert!(pm.get_state().is_none());
+    }
+
+    #[test]
+    fn check_timeouts_closes_expired_popup() {
+        let mut pm = PopupManager::new();
+        pm.handle_action(open("volume", "HDMI-1", Some(Duration::ZERO)));
+        pm.check_timeouts();
+        assert!(pm.get_state().is_none());
+    }
+
+    #[test]
+    fn check_timeouts_keeps_non_expired_popup() {
+        let mut pm = PopupManager::new();
+        pm.handle_action(open("volume", "HDMI-1", Some(Duration::from_secs(60))));
+        pm.check_timeouts();
+        assert!(pm.get_state().is_some());
+    }
+
+    #[test]
+    fn check_timeouts_never_closes_infinite_popup() {
+        let mut pm = PopupManager::new();
+        pm.handle_action(open("dashboard", "HDMI-1", None));
+        pm.check_timeouts();
+        assert!(pm.get_state().is_some());
+    }
+}
