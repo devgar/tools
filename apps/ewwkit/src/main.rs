@@ -5,13 +5,13 @@ mod popup;
 mod state;
 
 use crate::config::AppConfig;
-use crate::domain::{AppState, PopupState, Presenter, SystemProvider, WindowManager};
+use crate::domain::{AppState, PopupState, Presenter, WindowManager};
+use crate::domain::{AudioProvider, BatteryProvider, WifiProvider};
 use crate::popup::{PopupManager, PopupAction as InternalPopupAction};
-use crate::domain::{AudioProvider, WifiProvider};
 use crate::infrastructure::audio;
+use crate::infrastructure::battery;
 use crate::infrastructure::wifi;
 use crate::infrastructure::ipc::{IpcServer, IpcMessage, send_message};
-use crate::infrastructure::sysfs::SysfsAdapter;
 use crate::infrastructure::niri::NiriAdapter;
 use crate::infrastructure::eww::EwwPresenter;
 use clap::{Parser, Subcommand};
@@ -81,15 +81,18 @@ async fn main() -> anyhow::Result<()> {
 async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
     let mut popup_manager = PopupManager::new();
     let ipc_server = IpcServer::new(&config.ipc.socket_path)?;
-    let sys_adapter = SysfsAdapter::new("BAT0");
     let niri_adapter = NiriAdapter::new(&config.niri.socket_path, "ui/images/icons");
-    
-    // El presenter ahora está abstraído. Usamos eww por defecto.
     let presenter: Box<dyn Presenter> = Box::new(EwwPresenter::new("ui"));
-    
+
     let mut state = AppState::default();
     let mut last_emitted_state = AppState::default();
-    
+
+    let battery_provider = battery::create_battery_provider();
+    if let Ok(bat) = battery_provider.get_battery().await {
+        state.system.battery = bat;
+    }
+    let mut battery_rx = battery_provider.watch();
+
     let audio_monitor = audio::create_monitor();
     if let Ok(audio) = audio_monitor.get_audio().await {
         state.system.audio = audio;
@@ -102,7 +105,6 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
     }
     let mut wifi_rx = wifi_provider.watch();
 
-    let mut battery_poll = interval(Duration::from_millis(config.polling.battery_ms));
     let mut popup_check = interval(Duration::from_millis(100));
     
     let niri_socket_path = config.niri.socket_path.clone().unwrap_or_else(|| {
@@ -118,12 +120,10 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
         let mut state_changed = false;
 
         tokio::select! {
-            _ = battery_poll.tick() => {
-                if let Ok(bat) = sys_adapter.get_battery().await {
-                    if state.system.battery != bat {
-                        state.system.battery = bat;
-                        state_changed = true;
-                    }
+            Some(bat) = battery_rx.recv() => {
+                if state.system.battery != bat {
+                    state.system.battery = bat;
+                    state_changed = true;
                 }
             }
             Some(net) = wifi_rx.recv() => {

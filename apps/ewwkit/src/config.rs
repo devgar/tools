@@ -5,7 +5,6 @@ use std::env;
 #[derive(Debug, Deserialize, Clone)]
 pub struct AppConfig {
     pub popups: PopupsConfig,
-    pub polling: PollingConfig,
     pub niri: NiriConfig,
     pub ipc: IpcConfig,
 }
@@ -14,13 +13,6 @@ pub struct AppConfig {
 pub struct PopupsConfig {
     pub timeout_ms: u64,
     pub exclusivity: bool,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct PollingConfig {
-    pub battery_ms: u64,
-    pub network_ms: u64,
-    pub audio_ms: u64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -41,9 +33,6 @@ impl AppConfig {
             // Configuración por defecto
             .set_default("popups.timeout_ms", 3000u64)?
             .set_default("popups.exclusivity", true)?
-            .set_default("polling.battery_ms", 5000u64)?
-            .set_default("polling.network_ms", 2000u64)?
-            .set_default("polling.audio_ms", 1000u64)?
             .set_default("niri.socket_path", None::<String>)?
             .set_default("ipc.socket_path", "/tmp/ewwkit.sock".to_string())?
             // Carga de archivo config/default.toml (opcional)

@@ -100,8 +100,9 @@ pub trait WindowManager: Send + Sync {
 }
 
 #[async_trait]
-pub trait SystemProvider: Send + Sync {
+pub trait BatteryProvider: Send + Sync {
     async fn get_battery(&self) -> anyhow::Result<BatteryState>;
+    fn watch(&self) -> mpsc::Receiver<BatteryState>;
 }
 
 #[async_trait]
