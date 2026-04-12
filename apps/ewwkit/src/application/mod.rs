@@ -102,11 +102,7 @@ pub async fn handle_event(
         AppEvent::Ipc(msg) => match msg {
             IpcMessage::Popup { name, output, keep } => {
                 let Some(output) = output.or_else(|| focused_output(state)) else { return false };
-                let timeout = if keep {
-                    None
-                } else {
-                    Some(Duration::from_millis(config.popups.timeout_ms))
-                };
+                let timeout = (!keep).then(|| Duration::from_millis(config.popups.timeout_ms));
                 popup_manager.handle_action(PopupAction::Open { name, output, timeout });
                 state.ui.popup = popup_manager.get_state();
                 return true;
