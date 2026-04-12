@@ -4,7 +4,6 @@ use crate::infrastructure::controls;
 use crate::infrastructure::ipc::{BrightnessAction, IpcMessage, VolumeAction};
 use crate::infrastructure::niri::NiriAdapter;
 use crate::popup::{PopupAction, PopupManager};
-use tokio::time::Duration;
 
 /// All events the daemon can receive, from any source.
 pub enum AppEvent {
@@ -34,7 +33,7 @@ fn trigger_popup(name: &str, state: &mut AppState, popup_manager: &mut PopupMana
     popup_manager.handle_action(PopupAction::Open {
         name: name.to_string(),
         output,
-        timeout: Some(Duration::from_millis(config.popups.timeout_ms)),
+        timeout: Some(config.popups.timeout),
     });
     state.ui.popup = popup_manager.get_state();
 }
@@ -100,7 +99,7 @@ pub async fn handle_event(
         AppEvent::Ipc(msg) => match msg {
             IpcMessage::Popup { name, output, keep } => {
                 let Some(output) = output.or_else(|| focused_output(state)) else { return false };
-                let timeout = (!keep).then(|| Duration::from_millis(config.popups.timeout_ms));
+                let timeout = (!keep).then_some(config.popups.timeout);
                 popup_manager.handle_action(PopupAction::Open { name, output, timeout });
                 state.ui.popup = popup_manager.get_state();
                 return true;
