@@ -10,6 +10,17 @@ pub struct AppState {
     pub ui: UiState,
 }
 
+impl AppState {
+    /// Returns the currently focused output, if any.
+    pub fn focused_output(&self) -> Option<String> {
+        self.desktop
+            .outputs
+            .iter()
+            .find(|(_, output)| output.contains_focused_window())
+            .map(|(name, _)| name.clone())
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct UiState {
     pub popup: Option<PopupState>,
@@ -47,6 +58,12 @@ pub struct OutputState {
     pub workspaces: Vec<WorkspaceState>,
 }
 
+impl OutputState {
+    /// Returns `true` if any workspace on this output contains the currently focused window.
+    pub fn contains_focused_window(&self) -> bool {
+        self.workspaces.iter().any(|ws| ws.contains_focused_window())
+    }
+}
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct WorkspaceState {
     pub id: u64,
@@ -54,6 +71,13 @@ pub struct WorkspaceState {
     pub name: Option<String>,
     pub active: bool,
     pub windows: Vec<WindowState>,
+}
+
+impl WorkspaceState {
+    /// Returns `true` if any window on this workspace is currently focused.
+    pub fn contains_focused_window(&self) -> bool {
+        self.windows.iter().any(|win| win.is_focused)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]

@@ -1,5 +1,5 @@
 use crate::config::AppConfig;
-use crate::domain::{AppState, AudioState, BatteryState, BrightnessState, NetworkState, PopupState, WindowManager};
+use crate::domain::{AppState, AudioState, BatteryState, BrightnessState, NetworkState, WindowManager};
 use crate::infrastructure::controls;
 use crate::infrastructure::ipc::{BrightnessAction, IpcMessage, VolumeAction};
 use crate::infrastructure::niri::NiriAdapter;
@@ -17,6 +17,28 @@ pub enum AppEvent {
     /// Popup timeout check tick (100 ms interval).
     PopupTick,
     Ipc(IpcMessage),
+}
+
+/// Returns the name of the output that contains the currently focused window,
+/// falling back to the first known output, then to `"eDP-1"`.
+// TODO: move "eDP-1" fallback to config
+fn focused_output(state: &AppState) -> Option<String> {
+    state
+        .focused_output()
+        .or_else(|| state.desktop.outputs.keys().next().cloned())
+}
+
+/// Open an auto-dismissing popup on the focused output and sync `state.ui.popup`.
+///
+/// `name` is the popup widget name (e.g. `"volume"`, `"brightness"`).
+fn trigger_popup(name: &str, state: &mut AppState, popup_manager: &mut PopupManager, config: &AppConfig) {
+    let Some(output) = focused_output(state) else { return };
+    popup_manager.handle_action(PopupAction::Open {
+        name: name.to_string(),
+        output,
+        timeout: Some(Duration::from_millis(config.popups.timeout_ms)),
+    });
+    state.ui.popup = popup_manager.get_state();
 }
 
 /// Process one event, mutate state in place, return true if state changed.
@@ -45,25 +67,7 @@ pub async fn handle_event(
         AppEvent::AudioChanged(audio) => {
             if state.system.audio != audio {
                 state.system.audio = audio;
-                // TODO: move "eDP-1" fallback to config
-                let output = state
-                    .desktop
-                    .outputs
-                    .keys()
-                    .next()
-                    .cloned()
-                    .unwrap_or_else(|| "eDP-1".to_string());
-                popup_manager.handle_action(PopupAction::Open {
-                    name: "volume".to_string(),
-                    output: output.clone(),
-                    timeout: Some(Duration::from_millis(config.popups.timeout_ms)),
-                });
-                state.ui.popup = Some(PopupState {
-                    name: "volume".to_string(),
-                    output,
-                    opened_at: chrono::Utc::now().timestamp_millis() as u64,
-                    timeout_ms: Some(config.popups.timeout_ms),
-                });
+                trigger_popup("volume", state, popup_manager, config);
                 return true;
             }
         }
@@ -71,6 +75,7 @@ pub async fn handle_event(
         AppEvent::BrightnessChanged(brightness) => {
             if state.system.brightness != brightness {
                 state.system.brightness = brightness;
+                trigger_popup("brightness", state, popup_manager, config);
                 return true;
             }
         }
@@ -96,16 +101,7 @@ pub async fn handle_event(
 
         AppEvent::Ipc(msg) => match msg {
             IpcMessage::Popup { name, output, keep } => {
-                // TODO: move "eDP-1" fallback to config
-                let output = output.unwrap_or_else(|| {
-                    state
-                        .desktop
-                        .outputs
-                        .keys()
-                        .next()
-                        .cloned()
-                        .unwrap_or_else(|| "eDP-1".to_string())
-                });
+                let Some(output) = output.or_else(|| focused_output(state)) else { return false };
                 let timeout = if keep {
                     None
                 } else {
