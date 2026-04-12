@@ -1,5 +1,5 @@
 use crate::config::AppConfig;
-use crate::domain::{AppState, AudioState, BatteryState, NetworkState, PopupState, WindowManager};
+use crate::domain::{AppState, AudioState, BatteryState, BrightnessState, NetworkState, PopupState, WindowManager};
 use crate::infrastructure::controls;
 use crate::infrastructure::ipc::{BrightnessAction, IpcMessage, VolumeAction};
 use crate::infrastructure::niri::NiriAdapter;
@@ -11,6 +11,7 @@ pub enum AppEvent {
     BatteryChanged(BatteryState),
     NetworkChanged(NetworkState),
     AudioChanged(AudioState),
+    BrightnessChanged(BrightnessState),
     /// Niri emitted a desktop-change signal; state is fetched inside the handler.
     NiriEvent,
     /// Popup timeout check tick (100 ms interval).
@@ -63,6 +64,13 @@ pub async fn handle_event(
                     opened_at: chrono::Utc::now().timestamp_millis() as u64,
                     timeout_ms: Some(config.popups.timeout_ms),
                 });
+                return true;
+            }
+        }
+
+        AppEvent::BrightnessChanged(brightness) => {
+            if state.system.brightness != brightness {
+                state.system.brightness = brightness;
                 return true;
             }
         }

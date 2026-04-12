@@ -20,6 +20,7 @@ pub struct SystemState {
     pub battery: BatteryState,
     pub network: NetworkState,
     pub audio: AudioState,
+    pub brightness: BrightnessState,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
@@ -68,6 +69,12 @@ pub struct WindowState {
 pub struct AudioState {
     pub volume: u8,
     pub muted: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+pub struct BrightnessState {
+    pub level: u8,
+    pub icon: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
@@ -121,6 +128,7 @@ mod tests {
                     signal: 72,
                     icon: "wifi-icon".to_string(),
                 },
+                brightness: BrightnessState::default(),
                 audio: AudioState {
                     volume: 45,
                     muted: false,

@@ -12,6 +12,7 @@ use crate::config::AppConfig;
 use crate::domain::{AppState, Presenter, StateProvider};
 use crate::infrastructure::audio;
 use crate::infrastructure::battery;
+use crate::infrastructure::brightness;
 use crate::infrastructure::event_bus::EventBus;
 use crate::infrastructure::eww::EwwPresenter;
 use crate::infrastructure::ipc::IpcServer;
@@ -61,6 +62,20 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
         state.system.network = net;
     }
 
+    let brightness_rx = match brightness::create_brightness_provider() {
+        Some(provider) => {
+            eprintln!("ewwkit [{}]: initializing", provider.path());
+            if let Ok(b) = provider.init().await {
+                state.system.brightness = b;
+            }
+            provider.watch()
+        }
+        None => {
+            eprintln!("ewwkit [system.brightness]: no backlight device found, skipping");
+            tokio::sync::mpsc::channel(1).1
+        }
+    };
+
     let niri_socket_path = config.niri.socket_path.clone().unwrap_or_else(|| {
         std::env::var("NIRI_SOCKET").unwrap_or_else(|_| {
             let xdg_runtime = std::env::var("XDG_RUNTIME_DIR")
@@ -75,6 +90,7 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
         battery_provider.watch(),
         audio_monitor.watch(),
         wifi_provider.watch(),
+        brightness_rx,
         niri_events,
         ipc_server,
     );
