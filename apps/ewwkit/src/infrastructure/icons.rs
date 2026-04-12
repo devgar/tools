@@ -16,7 +16,7 @@ impl IconResolver {
         }
     }
 
-    pub fn resolve(&self, app_id: &Option<String>) -> String {
+    pub fn resolve(&self, app_id: Option<&str>) -> String {
         let app_id = match app_id {
             Some(id) if !id.is_empty() => id,
             _ => return self.default_icon.clone(),
@@ -45,7 +45,7 @@ impl IconResolver {
 
         // Update cache
         let mut cache = self.cache.write().unwrap();
-        cache.insert(app_id.clone(), final_path.clone());
+        cache.insert(app_id.to_string(), final_path.clone());
 
         final_path
     }

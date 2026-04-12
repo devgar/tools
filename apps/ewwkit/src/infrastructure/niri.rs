@@ -15,8 +15,8 @@ pub struct NiriAdapter {
 }
 
 impl NiriAdapter {
-    pub fn new(config_socket_path: &Option<String>, icon_dir: &str) -> Self {
-        let socket_path = config_socket_path.clone().unwrap_or_else(|| {
+    pub fn new(config_socket_path: Option<&str>, icon_dir: &str) -> Self {
+        let socket_path = config_socket_path.map(|s| s.to_string()).unwrap_or_else(|| {
             match env::var("NIRI_SOCKET") {
                 Ok(path) => path,
                 Err(_) => {
@@ -117,7 +117,7 @@ impl WindowManager for NiriAdapter {
         // 1. Parse and sort all windows
         let mut all_windows = win_array.iter().map(|w| {
             let app_id = w["app_id"].as_str().map(|s| s.to_string());
-            let app_icon = self.icon_resolver.resolve(&app_id);
+            let app_icon = self.icon_resolver.resolve(app_id.as_deref());
             
             (
                 WindowState {

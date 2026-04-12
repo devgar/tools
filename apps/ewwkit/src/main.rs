@@ -37,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
 
 async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
     let ipc_server = IpcServer::new(&config.ipc.socket_path)?;
-    let niri_adapter = NiriAdapter::new(&config.niri.socket_path, "ui/images/icons");
+    let niri_adapter = NiriAdapter::new(config.niri.socket_path.as_deref(), "ui/images/icons");
     let presenter: Box<dyn Presenter> = Box::new(EwwPresenter {});
 
     let mut state = AppState::default();

@@ -80,7 +80,7 @@ pub async fn handle_action(config: &AppConfig, action: ActionCommands) -> anyhow
 }
 
 pub async fn print_desktop(config: AppConfig) -> anyhow::Result<()> {
-    let niri_adapter = NiriAdapter::new(&config.niri.socket_path, "ui/images/icons");
+    let niri_adapter = NiriAdapter::new(config.niri.socket_path.as_deref(), "ui/images/icons");
     let desktop = niri_adapter.get_desktop_state().await?;
     for (output_name, output_state) in desktop.outputs {
         println!("Output: {}", output_name);
