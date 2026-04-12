@@ -7,12 +7,18 @@ pub struct AppConfig {
     pub popups: PopupsConfig,
     pub niri: NiriConfig,
     pub ipc: IpcConfig,
+    pub controls: ControlsConfig,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ControlsConfig {
+    pub volume_step: u8,
+    pub brightness_step: u8,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct PopupsConfig {
     pub timeout_ms: u64,
-    pub exclusivity: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -35,6 +41,8 @@ impl AppConfig {
             .set_default("popups.exclusivity", true)?
             .set_default("niri.socket_path", None::<String>)?
             .set_default("ipc.socket_path", "/tmp/ewwkit.sock".to_string())?
+        .set_default("controls.volume_step", 5u64)?
+        .set_default("controls.brightness_step", 5u64)?
             // Carga de archivo config/default.toml (opcional)
             .add_source(File::with_name("config/default").required(false))
             .add_source(File::with_name(&format!("config/{}", run_mode)).required(false))

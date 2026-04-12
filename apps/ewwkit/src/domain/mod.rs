@@ -1,5 +1,5 @@
-use serde::{Serialize, Deserialize};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use tokio::sync::mpsc;
 
@@ -78,43 +78,29 @@ pub struct PopupState {
     pub timeout_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum PresentationAction {
-    Open(String),
-    Close(String),
-    Toggle(String),
+/// A module that owns a slice of `AppState` identified by `path()`.
+///
+/// `path` is a dotted key naming the state field this provider owns,
+/// e.g. `"system.battery"`, `"system.audio"`, `"system.network"`.
+/// It is used for logging and future action routing.
+#[async_trait]
+pub trait StateProvider<S: Clone + Send + 'static>: Send + Sync {
+    /// Dotted path in the state tree this provider owns (e.g. `"system.battery"`).
+    fn path(&self) -> &'static str;
+    /// Fetch the current state once (used at daemon startup).
+    async fn init(&self) -> anyhow::Result<S>;
+    /// Returns a channel that emits a new value whenever state changes.
+    fn watch(&self) -> mpsc::Receiver<S>;
 }
 
 #[async_trait]
 pub trait Presenter: Send + Sync {
-    /// Update the overall UI state
     async fn update_state(&self, state: &AppState) -> anyhow::Result<()>;
-    
-    /// Handle a specific UI action
-    async fn execute_action(&self, action: PresentationAction) -> anyhow::Result<()>;
 }
 
 #[async_trait]
 pub trait WindowManager: Send + Sync {
     async fn get_desktop_state(&self) -> anyhow::Result<DesktopState>;
-}
-
-#[async_trait]
-pub trait BatteryProvider: Send + Sync {
-    async fn get_battery(&self) -> anyhow::Result<BatteryState>;
-    fn watch(&self) -> mpsc::Receiver<BatteryState>;
-}
-
-#[async_trait]
-pub trait WifiProvider: Send + Sync {
-    async fn get_network(&self) -> anyhow::Result<NetworkState>;
-    fn watch(&self) -> mpsc::Receiver<NetworkState>;
-}
-
-#[async_trait]
-pub trait AudioProvider: Send + Sync {
-    async fn get_audio(&self) -> anyhow::Result<AudioState>;
-    fn watch(&self) -> mpsc::Receiver<AudioState>;
 }
 
 #[cfg(test)]

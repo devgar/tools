@@ -1,4 +1,4 @@
-use crate::domain::{BatteryProvider, BatteryState};
+use crate::domain::{BatteryState, StateProvider};
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
@@ -7,8 +7,12 @@ pub struct SysfsBatteryProvider {
 }
 
 #[async_trait]
-impl BatteryProvider for SysfsBatteryProvider {
-    async fn get_battery(&self) -> anyhow::Result<BatteryState> {
+impl StateProvider<BatteryState> for SysfsBatteryProvider {
+    fn path(&self) -> &'static str {
+        "system.battery"
+    }
+
+    async fn init(&self) -> anyhow::Result<BatteryState> {
         read_battery_state(&self.battery_name).await
     }
 
@@ -104,7 +108,7 @@ fn discover_battery() -> Option<String> {
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
 }
 
-pub fn create_battery_provider() -> impl BatteryProvider {
+pub fn create_battery_provider() -> impl StateProvider<BatteryState> {
     let battery_name = discover_battery().unwrap_or_else(|| {
         eprintln!("ewwkit: no battery found in /sys/class/power_supply, defaulting to BAT0");
         "BAT0".to_string()

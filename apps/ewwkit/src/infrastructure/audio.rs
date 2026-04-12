@@ -1,4 +1,4 @@
-use crate::domain::{AudioProvider, AudioState};
+use crate::domain::{AudioState, StateProvider};
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
@@ -13,8 +13,12 @@ pub struct PactlMonitor;
 
 #[cfg(not(feature = "alsa"))]
 #[async_trait]
-impl AudioProvider for PactlMonitor {
-    async fn get_audio(&self) -> anyhow::Result<AudioState> {
+impl StateProvider<AudioState> for PactlMonitor {
+    fn path(&self) -> &'static str {
+        "system.audio"
+    }
+
+    async fn init(&self) -> anyhow::Result<AudioState> {
         query_pactl().await
     }
 
@@ -108,8 +112,12 @@ pub struct AlsaMonitor;
 
 #[cfg(feature = "alsa")]
 #[async_trait]
-impl AudioProvider for AlsaMonitor {
-    async fn get_audio(&self) -> anyhow::Result<AudioState> {
+impl StateProvider<AudioState> for AlsaMonitor {
+    fn path(&self) -> &'static str {
+        "system.audio"
+    }
+
+    async fn init(&self) -> anyhow::Result<AudioState> {
         tokio::task::spawn_blocking(read_alsa_audio).await?
     }
 
@@ -192,7 +200,7 @@ fn read_alsa_audio() -> anyhow::Result<AudioState> {
 
 // ── Factory ──────────────────────────────────────────────────────────────────
 
-pub fn create_monitor() -> impl AudioProvider {
+pub fn create_monitor() -> impl StateProvider<AudioState> {
     #[cfg(not(feature = "alsa"))]
     return PactlMonitor;
     #[cfg(feature = "alsa")]
@@ -203,7 +211,7 @@ pub fn create_monitor() -> impl AudioProvider {
 #[cfg(all(test, not(feature = "alsa")))]
 mod tests {
     use super::*;
-    use crate::domain::AudioProvider;
+    use crate::domain::StateProvider;
 
     // ── parse_pactl_volume ────────────────────────────────────────────────────
 

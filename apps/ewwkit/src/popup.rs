@@ -9,7 +9,6 @@ pub enum PopupAction {
         timeout: Option<Duration>,
     },
     Close,
-    KeepAlive,
 }
 
 pub struct PopupManager {
@@ -54,11 +53,6 @@ impl PopupManager {
             }
             PopupAction::Close => {
                 self.current_popup = None;
-            }
-            PopupAction::KeepAlive => {
-                if let Some(popup) = &mut self.current_popup {
-                    popup.opened_at = Instant::now();
-                }
             }
         }
     }

@@ -1,10 +1,63 @@
+use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::path::Path;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
-use std::path::Path;
 
-#[derive(Debug, Serialize, Deserialize)]
+/// Wire format sent over the IPC socket (daemon receives, client sends).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum VolumeAction {
+    Up { step: u8 },
+    Down { step: u8 },
+    Set { percent: u8 },
+    Mute,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum BrightnessAction {
+    Up { step: u8 },
+    Down { step: u8 },
+    Set { percent: u8 },
+}
+
+/// CLI subcommands for `ewwkit action volume <subcommand>`.
+#[derive(Subcommand, Debug, Clone)]
+pub enum VolumeCommands {
+    /// Increase volume by step percent
+    Up {
+        #[arg(short, long)]
+        step: Option<u8>,
+    },
+    /// Decrease volume by step percent
+    Down {
+        #[arg(short, long)]
+        step: Option<u8>,
+    },
+    /// Set volume to an absolute percentage (0–100)
+    Set { percent: u8 },
+    /// Toggle mute
+    Mute,
+}
+
+/// CLI subcommands for `ewwkit action brightness <subcommand>`.
+#[derive(Subcommand, Debug, Clone)]
+pub enum BrightnessCommands {
+    /// Increase brightness by step percent
+    Up {
+        #[arg(short, long)]
+        step: Option<u8>,
+    },
+    /// Decrease brightness by step percent
+    Down {
+        #[arg(short, long)]
+        step: Option<u8>,
+    },
+    /// Set brightness to an absolute percentage (0–100)
+    Set { percent: u8 },
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum IpcMessage {
     Popup {
         name: String,
@@ -13,6 +66,8 @@ pub enum IpcMessage {
     },
     ClosePopup,
     GetState,
+    Volume(VolumeAction),
+    Brightness(BrightnessAction),
 }
 
 pub async fn send_message(socket_path: &str, msg: &IpcMessage) -> anyhow::Result<()> {

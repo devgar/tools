@@ -1,5 +1,7 @@
 pub mod audio;
 pub mod battery;
+pub mod controls;
+pub mod event_bus;
 pub mod eww;
 pub mod icons;
 pub mod ipc;

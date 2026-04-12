@@ -1,12 +1,16 @@
-use crate::domain::{NetworkState, WifiProvider};
+use crate::domain::{NetworkState, StateProvider};
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
 pub struct NmcliWifiProvider;
 
 #[async_trait]
-impl WifiProvider for NmcliWifiProvider {
-    async fn get_network(&self) -> anyhow::Result<NetworkState> {
+impl StateProvider<NetworkState> for NmcliWifiProvider {
+    fn path(&self) -> &'static str {
+        "system.network"
+    }
+
+    async fn init(&self) -> anyhow::Result<NetworkState> {
         query_nmcli().await
     }
 
@@ -102,14 +106,14 @@ fn wifi_icon(signal: u8) -> String {
     .into()
 }
 
-pub fn create_wifi_provider() -> impl WifiProvider {
+pub fn create_wifi_provider() -> impl StateProvider<NetworkState> {
     NmcliWifiProvider
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::WifiProvider;
+    use crate::domain::StateProvider;
 
     // ── wifi_icon ─────────────────────────────────────────────────────────────
 
