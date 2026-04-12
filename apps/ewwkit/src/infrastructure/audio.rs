@@ -110,14 +110,13 @@ impl AudioProvider for AlsaMonitor {
     }
 
     fn watch(&self) -> mpsc::Receiver<AudioState> {
-        use alsa::ctl::{Ctl, EventMask};
-        use tokio::io::unix::AsyncFd;
-
         let (tx, rx) = mpsc::channel(8);
 
-        tokio::spawn(async move {
-            // nonblock=true sets O_NONBLOCK, required by AsyncFd.
-            let ctl = match Ctl::new("default", true) {
+        // Ctl does not implement AsRawFd so AsyncFd is not an option.
+        // A dedicated thread blocking on ctl.wait() costs zero CPU at idle
+        // and communicates with the tokio runtime via blocking_send.
+        std::thread::spawn(move || {
+            let ctl = match alsa::ctl::Ctl::new("default", false) {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("ewwkit: failed to open ALSA ctl: {e}");
@@ -128,46 +127,34 @@ impl AudioProvider for AlsaMonitor {
                 eprintln!("ewwkit: failed to subscribe to ALSA events: {e}");
                 return;
             }
-            let async_ctl = match AsyncFd::new(ctl) {
-                Ok(fd) => fd,
-                Err(e) => {
-                    eprintln!("ewwkit: failed to create AsyncFd for ALSA ctl: {e}");
-                    return;
-                }
-            };
 
             loop {
-                let mut guard = match async_ctl.readable().await {
-                    Ok(g) => g,
+                // Block until an event arrives; 1 s timeout lets us notice
+                // if the receiver was dropped even with no ALSA activity.
+                match ctl.wait(Some(1000)) {
+                    Ok(_) => {}
                     Err(e) => {
-                        eprintln!("ewwkit: ALSA poll error: {e}");
+                        eprintln!("ewwkit: ALSA wait error: {e}");
                         break;
                     }
-                };
-                guard.clear_ready();
+                }
 
-                // Drain all pending events; only act when at least one VALUE event arrived.
+                // Drain all queued events; act only when at least one is a VALUE change.
                 let mut value_changed = false;
-                loop {
-                    match async_ctl.get_ref().read_event() {
-                        Ok(Some(ev)) if ev.get_mask() == EventMask::VALUE => {
-                            value_changed = true;
-                        }
-                        Ok(Some(_)) => {} // add / remove / info — not a volume change
-                        Ok(None) => break, // EAGAIN: no more events queued
-                        Err(_) => break,
+                while let Ok(Some(ev)) = ctl.read() {
+                    if ev.get_mask().value() {
+                        value_changed = true;
                     }
                 }
 
                 if value_changed {
-                    match tokio::task::spawn_blocking(read_alsa_audio).await {
-                        Ok(Ok(audio)) => {
-                            if tx.send(audio).await.is_err() {
-                                break;
+                    match read_alsa_audio() {
+                        Ok(audio) => {
+                            if tx.blocking_send(audio).is_err() {
+                                break; // receiver dropped, exit the thread
                             }
                         }
-                        Ok(Err(e)) => eprintln!("ewwkit: ALSA read error: {e}"),
-                        Err(e) => eprintln!("ewwkit: spawn_blocking join error: {e}"),
+                        Err(e) => eprintln!("ewwkit: ALSA read error: {e}"),
                     }
                 }
             }
