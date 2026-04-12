@@ -1,4 +1,5 @@
 mod application;
+mod cli;
 mod config;
 mod domain;
 mod infrastructure;
@@ -6,64 +7,18 @@ mod popup;
 mod state;
 
 use crate::application::handle_event;
+use crate::cli::{Cli, Commands};
 use crate::config::AppConfig;
-use crate::domain::{AppState, Presenter, StateProvider, WindowManager};
+use crate::domain::{AppState, Presenter, StateProvider};
 use crate::infrastructure::audio;
 use crate::infrastructure::battery;
 use crate::infrastructure::event_bus::EventBus;
-use crate::infrastructure::ipc::{
-    BrightnessAction, BrightnessCommands, IpcMessage, VolumeAction, VolumeCommands, send_message,
-};
-use crate::infrastructure::ipc::{IpcServer};
-use crate::infrastructure::niri::NiriAdapter;
 use crate::infrastructure::eww::EwwPresenter;
+use crate::infrastructure::ipc::IpcServer;
+use crate::infrastructure::niri::NiriAdapter;
 use crate::infrastructure::wifi;
 use crate::popup::PopupManager;
-use clap::{Parser, Subcommand};
-
-#[derive(Parser)]
-#[command(author, version, about, long_about = None)]
-struct Cli {
-    #[command(subcommand)]
-    command: Commands,
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    /// Start the monitoring daemon
-    Daemon,
-    /// Send an action to the running daemon
-    Action {
-        #[command(subcommand)]
-        action: ActionCommands,
-    },
-    /// Print the current desktop state (for debugging)
-    Desktop,
-}
-
-#[derive(Subcommand, Debug)]
-enum ActionCommands {
-    /// Open a popup
-    Popup {
-        name: String,
-        #[arg(short, long)]
-        output: Option<String>,
-        #[arg(short, long)]
-        keep: bool,
-    },
-    /// Close the current popup
-    ClosePopup,
-    /// Control audio volume
-    Volume {
-        #[command(subcommand)]
-        action: VolumeCommands,
-    },
-    /// Control screen brightness
-    Brightness {
-        #[command(subcommand)]
-        action: BrightnessCommands,
-    },
-}
+use clap::Parser;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -72,8 +27,8 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Daemon => run_daemon(config).await?,
-        Commands::Action { action } => handle_action(&config, action).await?,
-        Commands::Desktop => print_desktop(config).await?,
+        Commands::Action { action } => cli::handle_action(&config, action).await?,
+        Commands::Desktop => cli::print_desktop(config).await?,
     }
 
     Ok(())
@@ -82,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
 async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
     let ipc_server = IpcServer::new(&config.ipc.socket_path)?;
     let niri_adapter = NiriAdapter::new(&config.niri.socket_path, "ui/images/icons");
-    let presenter: Box<dyn Presenter> = Box::new(EwwPresenter{});
+    let presenter: Box<dyn Presenter> = Box::new(EwwPresenter {});
 
     let mut state = AppState::default();
     let mut last_emitted_state = AppState::default();
@@ -126,66 +81,11 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
 
     loop {
         let event = event_bus.next().await;
-        let changed = handle_event(event, &mut state, &mut popup_manager, &config, &niri_adapter).await;
+        let changed =
+            handle_event(event, &mut state, &mut popup_manager, &config, &niri_adapter).await;
         if changed && state != last_emitted_state {
             let _ = presenter.update_state(&state).await;
             last_emitted_state = state.clone();
         }
     }
-}
-
-async fn handle_action(config: &AppConfig, action: ActionCommands) -> anyhow::Result<()> {
-    let msg = match action {
-        ActionCommands::Popup { name, output, keep } => IpcMessage::Popup { name, output, keep },
-        ActionCommands::ClosePopup => IpcMessage::ClosePopup,
-        ActionCommands::Volume { action } => IpcMessage::Volume(match action {
-            VolumeCommands::Up { step } => VolumeAction::Up {
-                step: step.unwrap_or(config.controls.volume_step),
-            },
-            VolumeCommands::Down { step } => VolumeAction::Down {
-                step: step.unwrap_or(config.controls.volume_step),
-            },
-            VolumeCommands::Set { percent } => VolumeAction::Set { percent },
-            VolumeCommands::Mute => VolumeAction::Mute,
-        }),
-        ActionCommands::Brightness { action } => IpcMessage::Brightness(match action {
-            BrightnessCommands::Up { step } => BrightnessAction::Up {
-                step: step.unwrap_or(config.controls.brightness_step),
-            },
-            BrightnessCommands::Down { step } => BrightnessAction::Down {
-                step: step.unwrap_or(config.controls.brightness_step),
-            },
-            BrightnessCommands::Set { percent } => BrightnessAction::Set { percent },
-        }),
-    };
-
-    send_message(&config.ipc.socket_path, &msg).await?;
-    Ok(())
-}
-
-async fn print_desktop(config: AppConfig) -> anyhow::Result<()> {
-    let niri_adapter = NiriAdapter::new(&config.niri.socket_path, "ui/images/icons");
-    let desktop = niri_adapter.get_desktop_state().await?;
-    for (output_name, output_state) in desktop.outputs {
-        println!("Output: {}", output_name);
-        for ws in output_state.workspaces {
-            println!(
-                "  [{}] {} {}:",
-                ws.active.then(|| "x").unwrap_or(" "),
-                ws.id,
-                ws.name.as_deref().unwrap_or("")
-            );
-            for win in ws.windows {
-                println!(
-                    "    [{}] {} {}\n      {}\n      {}",
-                    win.is_focused.then(|| "x").unwrap_or(" "),
-                    win.id,
-                    win.app_id.as_deref().unwrap_or("None"),
-                    win.title,
-                    win.app_icon
-                );
-            }
-        }
-    }
-    Ok(())
 }
