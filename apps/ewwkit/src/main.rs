@@ -7,6 +7,7 @@ mod state;
 use crate::config::AppConfig;
 use crate::domain::{AppState, PopupState, Presenter, SystemProvider, WindowManager};
 use crate::popup::{PopupManager, PopupAction as InternalPopupAction};
+use crate::domain::AudioProvider;
 use crate::infrastructure::audio;
 use crate::infrastructure::ipc::{IpcServer, IpcMessage, send_message};
 use crate::infrastructure::sysfs::SysfsAdapter;
@@ -88,11 +89,11 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
     let mut state = AppState::default();
     let mut last_emitted_state = AppState::default();
     
-    // Seed initial audio state before the watcher starts.
-    if let Ok(audio) = audio::get_audio().await {
+    let audio_monitor = audio::create_monitor();
+    if let Ok(audio) = audio_monitor.get_audio().await {
         state.system.audio = audio;
     }
-    let mut audio_rx = audio::watch_audio();
+    let mut audio_rx = audio_monitor.watch();
 
     let mut battery_poll = interval(Duration::from_millis(config.polling.battery_ms));
     let mut net_poll = interval(Duration::from_secs(10));

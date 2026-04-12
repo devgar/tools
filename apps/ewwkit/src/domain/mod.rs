@@ -1,6 +1,7 @@
 use serde::{Serialize, Deserialize};
 use async_trait::async_trait;
 use std::collections::BTreeMap;
+use tokio::sync::mpsc;
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct AppState {
@@ -102,7 +103,12 @@ pub trait WindowManager: Send + Sync {
 pub trait SystemProvider: Send + Sync {
     async fn get_battery(&self) -> anyhow::Result<BatteryState>;
     async fn get_network(&self) -> anyhow::Result<NetworkState>;
+}
+
+#[async_trait]
+pub trait AudioProvider: Send + Sync {
     async fn get_audio(&self) -> anyhow::Result<AudioState>;
+    fn watch(&self) -> mpsc::Receiver<AudioState>;
 }
 
 #[cfg(test)]

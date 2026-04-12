@@ -1,4 +1,4 @@
-use crate::domain::{SystemProvider, BatteryState, NetworkState, AudioState};
+use crate::domain::{SystemProvider, BatteryState, NetworkState};
 use async_trait::async_trait;
 use std::fs;
 
@@ -74,7 +74,4 @@ impl SystemProvider for SysfsAdapter {
         })
     }
 
-    async fn get_audio(&self) -> anyhow::Result<AudioState> {
-        crate::infrastructure::audio::get_audio().await
-    }
 }
