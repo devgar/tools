@@ -33,9 +33,6 @@ enum Commands {
         #[command(subcommand)]
         action: ActionCommands,
     },
-    #[deprecated(since = "0.4.0", note = "Replaced with `desktop` command for better desktop state inspection.")]
-    Windows,
-
     /// Imprime el estado actual del escritorio (para debugging)
     Desktop,
 }
@@ -65,10 +62,6 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Action { action } => {
             handle_action(&config, action).await?;
-        }
-        Commands::Windows => {
-            eprintln!("Warning: 'windows' command is deprecated and should only be used for debugging purposes.");
-            list_windows(config).await?;
         }
         Commands::Desktop => {
             print_desktop(config).await?;
@@ -211,23 +204,6 @@ async fn handle_action(config: &AppConfig, action: ActionCommands) -> anyhow::Re
     };
 
     send_message(&config.ipc.socket_path, &msg).await?;
-    Ok(())
-}
-
-#[deprecated(since = "0.4.0", note = "Replaced with `print_desktop` command for better desktop state inspection.")]
-async fn list_windows(config: AppConfig) -> anyhow::Result<()> {
-    let niri_adapter = NiriAdapter::new(&config.niri.socket_path, "ui/images/icons");
-    let desktop = niri_adapter.get_desktop_state().await?;
-    for (output_name, output_state) in desktop.outputs {
-        println!("Output: {}", output_name);
-        for ws in output_state.workspaces {
-            println!("  Workspace {}:", ws.id);
-            for win in ws.windows {
-                println!("    Window ID: {}, Title: {}, App ID: {:?}, Icon: {}, Focused: {}", 
-                    win.id, win.title, win.app_id, win.app_icon, win.is_focused);
-            }
-        }
-    }
     Ok(())
 }
 
