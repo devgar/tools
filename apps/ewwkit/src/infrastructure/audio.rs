@@ -188,12 +188,10 @@ fn read_alsa_audio() -> anyhow::Result<AudioState> {
 
 // ── Factory ──────────────────────────────────────────────────────────────────
 
-#[cfg(not(feature = "alsa"))]
 pub fn create_monitor() -> impl AudioProvider {
-    PactlMonitor
+    #[cfg(not(feature = "alsa"))]
+    return PactlMonitor;
+    #[cfg(feature = "alsa")]
+    return AlsaMonitor;
 }
 
-#[cfg(feature = "alsa")]
-pub fn create_monitor() -> impl AudioProvider {
-    AlsaMonitor
-}
