@@ -20,8 +20,6 @@ pub enum AppEvent {
 }
 
 /// Returns the name of the output that contains the currently focused window,
-/// falling back to the first known output, then to `"eDP-1"`.
-// TODO: move "eDP-1" fallback to config
 fn focused_output(state: &AppState) -> Option<String> {
     state
         .focused_output()
