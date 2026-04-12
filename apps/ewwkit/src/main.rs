@@ -5,6 +5,8 @@ mod domain;
 mod infrastructure;
 mod popup;
 mod state;
+#[cfg(test)]
+mod test_utils;
 
 use crate::application::handle_event;
 use crate::cli::{Cli, Commands};

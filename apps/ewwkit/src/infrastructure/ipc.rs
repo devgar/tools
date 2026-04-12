@@ -108,15 +108,12 @@ impl IpcServer {
 mod tests {
     use super::*;
 
-    fn roundtrip(msg: &IpcMessage) -> IpcMessage {
-        let json = serde_json::to_string(msg).expect("serialize");
-        serde_json::from_str(&json).expect("deserialize")
-    }
+    use crate::test_utils::{serde_roundtrip as rt};
 
     #[test]
     fn popup_with_output_roundtrip() {
         let msg = IpcMessage::Popup { name: "volume".to_string(), output: Some("HDMI-1".to_string()), keep: false };
-        match roundtrip(&msg) {
+        match rt(&msg) {
             IpcMessage::Popup { name, output, keep } => {
                 assert_eq!(name, "volume");
                 assert_eq!(output.as_deref(), Some("HDMI-1"));
@@ -129,7 +126,7 @@ mod tests {
     #[test]
     fn popup_without_output_roundtrip() {
         let msg = IpcMessage::Popup { name: "brightness".to_string(), output: None, keep: true };
-        match roundtrip(&msg) {
+        match rt(&msg) {
             IpcMessage::Popup { name, output, keep } => {
                 assert_eq!(name, "brightness");
                 assert!(output.is_none());
@@ -141,12 +138,12 @@ mod tests {
 
     #[test]
     fn close_popup_roundtrip() {
-        assert!(matches!(roundtrip(&IpcMessage::ClosePopup), IpcMessage::ClosePopup));
+        assert!(matches!(rt(&IpcMessage::ClosePopup), IpcMessage::ClosePopup));
     }
 
     #[test]
     fn get_state_roundtrip() {
-        assert!(matches!(roundtrip(&IpcMessage::GetState), IpcMessage::GetState));
+        assert!(matches!(rt(&IpcMessage::GetState), IpcMessage::GetState));
     }
 
     #[test]
@@ -158,8 +155,7 @@ mod tests {
             IpcMessage::Volume(VolumeAction::Mute),
         ];
         for msg in &cases {
-            let rt = roundtrip(msg);
-            assert_eq!(serde_json::to_string(&rt).unwrap(), serde_json::to_string(msg).unwrap());
+            assert_eq!(serde_json::to_string(&rt(msg)).unwrap(), serde_json::to_string(msg).unwrap());
         }
     }
 
@@ -171,8 +167,7 @@ mod tests {
             IpcMessage::Brightness(BrightnessAction::Set { percent: 50 }),
         ];
         for msg in &cases {
-            let rt = roundtrip(msg);
-            assert_eq!(serde_json::to_string(&rt).unwrap(), serde_json::to_string(msg).unwrap());
+            assert_eq!(serde_json::to_string(&rt(msg)).unwrap(), serde_json::to_string(msg).unwrap());
         }
     }
 }

@@ -218,21 +218,7 @@ mod tests {
         );
     }
 
-    fn focused_window() -> WindowState {
-        WindowState { is_focused: true, ..Default::default() }
-    }
-
-    fn unfocused_window() -> WindowState {
-        WindowState { is_focused: false, ..Default::default() }
-    }
-
-    fn workspace_with(windows: Vec<WindowState>) -> WorkspaceState {
-        WorkspaceState { windows, ..Default::default() }
-    }
-
-    fn output_with(workspaces: Vec<WorkspaceState>) -> OutputState {
-        OutputState { workspaces }
-    }
+    use crate::test_utils::{focused_window, output_with, unfocused_window, workspace_with};
 
     // --- WorkspaceState::contains_focused_window ---
 
