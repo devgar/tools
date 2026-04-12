@@ -1,7 +1,6 @@
 use crate::domain::{SystemProvider, BatteryState, NetworkState, AudioState};
 use async_trait::async_trait;
 use std::fs;
-use tokio::process::Command;
 
 pub struct SysfsAdapter {
     pub battery_name: String,
@@ -76,29 +75,6 @@ impl SystemProvider for SysfsAdapter {
     }
 
     async fn get_audio(&self) -> anyhow::Result<AudioState> {
-        let output = Command::new("amixer")
-            .args(["sget", "Master"])
-            .output()
-            .await?;
-
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Some(line) = stdout.lines().last() {
-                let vol = line.split('[')
-                    .nth(1)
-                    .and_then(|s| s.split('%').next())
-                    .and_then(|s| s.parse::<u8>().ok())
-                    .unwrap_or(0);
-                
-                let muted = line.contains("[off]");
-                
-                return Ok(AudioState {
-                    volume: vol,
-                    muted,
-                });
-            }
-        }
-
-        Ok(AudioState { volume: 0, muted: true })
+        crate::infrastructure::audio::get_audio().await
     }
 }

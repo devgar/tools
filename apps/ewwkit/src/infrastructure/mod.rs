@@ -1,3 +1,4 @@
+pub mod audio;
 pub mod eww;
 pub mod icons;
 pub mod ipc;

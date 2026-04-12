@@ -7,6 +7,7 @@ mod state;
 use crate::config::AppConfig;
 use crate::domain::{AppState, PopupState, Presenter, SystemProvider, WindowManager};
 use crate::popup::{PopupManager, PopupAction as InternalPopupAction};
+use crate::infrastructure::audio;
 use crate::infrastructure::ipc::{IpcServer, IpcMessage, send_message};
 use crate::infrastructure::sysfs::SysfsAdapter;
 use crate::infrastructure::niri::NiriAdapter;
@@ -87,9 +88,14 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
     let mut state = AppState::default();
     let mut last_emitted_state = AppState::default();
     
+    // Seed initial audio state before the watcher starts.
+    if let Ok(audio) = audio::get_audio().await {
+        state.system.audio = audio;
+    }
+    let mut audio_rx = audio::watch_audio();
+
     let mut battery_poll = interval(Duration::from_millis(config.polling.battery_ms));
-    let mut net_poll = interval(Duration::from_secs(10)); // Wifi cada 10s
-    let mut audio_poll = interval(Duration::from_millis(500)); // Audio cada 0.5s
+    let mut net_poll = interval(Duration::from_secs(10));
     let mut popup_check = interval(Duration::from_millis(100));
     
     let niri_socket_path = config.niri.socket_path.clone().unwrap_or_else(|| {
@@ -121,23 +127,21 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
                     }
                 }
             }
-            _ = audio_poll.tick() => {
-                if let Ok(audio) = sys_adapter.get_audio().await {
-                    if state.system.audio != audio {
-                        state.system.audio = audio;
-                        popup_manager.handle_action(InternalPopupAction::Open {
-                            name: "volume".to_string(),
-                            output: state.desktop.outputs.keys().next().cloned().unwrap_or_else(|| "eDP-1".to_string()),
-                            timeout: Some(Duration::from_millis(config.popups.timeout_ms)),
-                        });
-                        state.ui.popup = Some(PopupState {
-                            name: "volume".to_string(),
-                            output: state.desktop.outputs.keys().next().cloned().unwrap_or_else(|| "eDP-1".to_string()),
-                            opened_at: chrono::Utc::now().timestamp_millis() as u64,
-                            timeout_ms: Some(config.popups.timeout_ms),
-                        });
-                        state_changed = true;
-                    }
+            Some(audio) = audio_rx.recv() => {
+                if state.system.audio != audio {
+                    state.system.audio = audio;
+                    popup_manager.handle_action(InternalPopupAction::Open {
+                        name: "volume".to_string(),
+                        output: state.desktop.outputs.keys().next().cloned().unwrap_or_else(|| "eDP-1".to_string()),
+                        timeout: Some(Duration::from_millis(config.popups.timeout_ms)),
+                    });
+                    state.ui.popup = Some(PopupState {
+                        name: "volume".to_string(),
+                        output: state.desktop.outputs.keys().next().cloned().unwrap_or_else(|| "eDP-1".to_string()),
+                        opened_at: chrono::Utc::now().timestamp_millis() as u64,
+                        timeout_ms: Some(config.popups.timeout_ms),
+                    });
+                    state_changed = true;
                 }
             }
             Some(_) = niri_events.recv() => {
