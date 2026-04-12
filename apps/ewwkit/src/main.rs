@@ -7,8 +7,9 @@ mod state;
 use crate::config::AppConfig;
 use crate::domain::{AppState, PopupState, Presenter, SystemProvider, WindowManager};
 use crate::popup::{PopupManager, PopupAction as InternalPopupAction};
-use crate::domain::AudioProvider;
+use crate::domain::{AudioProvider, WifiProvider};
 use crate::infrastructure::audio;
+use crate::infrastructure::wifi;
 use crate::infrastructure::ipc::{IpcServer, IpcMessage, send_message};
 use crate::infrastructure::sysfs::SysfsAdapter;
 use crate::infrastructure::niri::NiriAdapter;
@@ -95,8 +96,13 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
     }
     let mut audio_rx = audio_monitor.watch();
 
+    let wifi_provider = wifi::create_wifi_provider();
+    if let Ok(net) = wifi_provider.get_network().await {
+        state.system.network = net;
+    }
+    let mut wifi_rx = wifi_provider.watch();
+
     let mut battery_poll = interval(Duration::from_millis(config.polling.battery_ms));
-    let mut net_poll = interval(Duration::from_secs(10));
     let mut popup_check = interval(Duration::from_millis(100));
     
     let niri_socket_path = config.niri.socket_path.clone().unwrap_or_else(|| {
@@ -120,12 +126,10 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
                     }
                 }
             }
-            _ = net_poll.tick() => {
-                if let Ok(net) = sys_adapter.get_network().await {
-                    if state.system.network != net {
-                        state.system.network = net;
-                        state_changed = true;
-                    }
+            Some(net) = wifi_rx.recv() => {
+                if state.system.network != net {
+                    state.system.network = net;
+                    state_changed = true;
                 }
             }
             Some(audio) = audio_rx.recv() => {

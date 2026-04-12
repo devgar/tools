@@ -1,4 +1,4 @@
-use crate::domain::{SystemProvider, BatteryState, NetworkState};
+use crate::domain::{SystemProvider, BatteryState};
 use async_trait::async_trait;
 use std::fs;
 
@@ -51,27 +51,6 @@ impl SystemProvider for SysfsAdapter {
         })
     }
 
-    async fn get_network(&self) -> anyhow::Result<NetworkState> {
-        // Leemos ssid de forma más eficiente si es posible, o mantenemos nmcli pero con menos frecuencia
-        // Por ahora, para reducir CPU, intentaremos leer info básica de sysfs
-        let operstate = fs::read_to_string("/sys/class/net/wlp3s0/operstate").unwrap_or_else(|_| "down".into());
-        
-        if operstate.trim() == "up" {
-             // Solo si está up, podemos intentar sacar el SSID (esto sigue siendo caro con nmcli,
-             // pero al menos evitamos ejecutarlo si la interfaz está caída)
-             // Optimización real: Usar una caché o bajar frecuencia en main.rs
-             return Ok(NetworkState {
-                wifi_ssid: "Connected".into(), // Placeholder hasta optimizar nmcli
-                signal: 75,
-                icon: "󰤨".into(),
-            });
-        }
 
-        Ok(NetworkState {
-            wifi_ssid: "Disconnected".into(),
-            signal: 0,
-            icon: "󰤭".into(),
-        })
-    }
 
 }
