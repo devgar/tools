@@ -62,6 +62,21 @@ impl AudioProvider for PactlMonitor {
 }
 
 #[cfg(not(feature = "alsa"))]
+fn parse_pactl_volume(output: &str) -> u8 {
+    output
+        .split('/')
+        .nth(1)
+        .and_then(|s| s.trim().strip_suffix('%'))
+        .and_then(|s| s.trim().parse::<u8>().ok())
+        .unwrap_or(0)
+}
+
+#[cfg(not(feature = "alsa"))]
+fn parse_pactl_mute(output: &str) -> bool {
+    output.contains("yes")
+}
+
+#[cfg(not(feature = "alsa"))]
 async fn query_pactl() -> anyhow::Result<AudioState> {
     use tokio::process::Command;
 
@@ -74,19 +89,8 @@ async fn query_pactl() -> anyhow::Result<AudioState> {
         .output()
         .await?;
 
-    let vol_str = String::from_utf8_lossy(&vol_out.stdout);
-    let mute_str = String::from_utf8_lossy(&mute_out.stdout);
-
-    // "Volume: front-left: 65536 /  100% / 0.00 dB,   front-right: ..."
-    let volume = vol_str
-        .split('/')
-        .nth(1)
-        .and_then(|s| s.trim().strip_suffix('%'))
-        .and_then(|s| s.trim().parse::<u8>().ok())
-        .unwrap_or(0);
-
-    // "Mute: yes" / "Mute: no"
-    let muted = mute_str.contains("yes");
+    let volume = parse_pactl_volume(&String::from_utf8_lossy(&vol_out.stdout));
+    let muted = parse_pactl_mute(&String::from_utf8_lossy(&mute_out.stdout));
 
     Ok(AudioState { volume, muted })
 }
@@ -193,5 +197,78 @@ pub fn create_monitor() -> impl AudioProvider {
     return PactlMonitor;
     #[cfg(feature = "alsa")]
     return AlsaMonitor;
+}
+
+// Tests are pactl-specific; skip when building with the alsa feature.
+#[cfg(all(test, not(feature = "alsa")))]
+mod tests {
+    use super::*;
+    use crate::domain::AudioProvider;
+
+    // ── parse_pactl_volume ────────────────────────────────────────────────────
+
+    #[test]
+    fn volume_typical_stereo_output() {
+        let s = "Volume: front-left: 65536 /  100% / 0.00 dB,   front-right: 65536 /  100% / 0.00 dB\n";
+        assert_eq!(parse_pactl_volume(s), 100);
+    }
+
+    #[test]
+    fn volume_at_zero() {
+        let s = "Volume: front-left: 0 /   0% / -inf dB,   front-right: 0 /   0% / -inf dB\n";
+        assert_eq!(parse_pactl_volume(s), 0);
+    }
+
+    #[test]
+    fn volume_mid_value() {
+        let s = "Volume: front-left: 39321 /   60% / -13.06 dB,   front-right: 39321 /   60% / -13.06 dB\n";
+        assert_eq!(parse_pactl_volume(s), 60);
+    }
+
+    #[test]
+    fn volume_mono_output() {
+        // Single channel — same split logic applies
+        let s = "Volume: mono: 39321 /  60% / -13.06 dB\n";
+        assert_eq!(parse_pactl_volume(s), 60);
+    }
+
+    #[test]
+    fn volume_empty_string_returns_zero() {
+        assert_eq!(parse_pactl_volume(""), 0);
+    }
+
+    #[test]
+    fn volume_above_100_boosted() {
+        // pactl can report >100% when software boost is applied; u8 handles up to 255
+        let s = "Volume: front-left: 78643 /  120% / 3.01 dB\n";
+        assert_eq!(parse_pactl_volume(s), 120);
+    }
+
+    // ── parse_pactl_mute ──────────────────────────────────────────────────────
+
+    #[test]
+    fn mute_yes() {
+        assert_eq!(parse_pactl_mute("Mute: yes\n"), true);
+    }
+
+    #[test]
+    fn mute_no() {
+        assert_eq!(parse_pactl_mute("Mute: no\n"), false);
+    }
+
+    #[test]
+    fn mute_empty_string_returns_false() {
+        assert_eq!(parse_pactl_mute(""), false);
+    }
+
+    // ── watch smoke test ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn watch_does_not_hang_on_dropped_receiver() {
+        let monitor = PactlMonitor;
+        drop(monitor.watch());
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        // If we reach here without hanging, the test passes.
+    }
 }
 
