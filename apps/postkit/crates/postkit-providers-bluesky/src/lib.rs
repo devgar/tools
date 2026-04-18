@@ -92,29 +92,21 @@ impl Bluesky {
 fn detect_facets(text: &str) -> Value {
     let mut facets: Vec<Value> = Vec::new();
 
-    // URLs
     let url_re = regex::Regex::new(r"https?://[^\s]+").unwrap();
     for m in url_re.find_iter(text) {
         facets.push(json!({
             "index": { "byteStart": m.start(), "byteEnd": m.end() },
-            "features": [{
-                "$type": "app.bsky.richtext.facet#link",
-                "uri": m.as_str(),
-            }]
+            "features": [{ "$type": "app.bsky.richtext.facet#link", "uri": m.as_str() }]
         }));
     }
 
-    // Hashtags: (^|\s)#tag — capturamos la palabra, luego extendemos 1 byte hacia
-    // atrás para incluir el '#' en el rango del facet.
+    // (^|\s)#tag — el '#' está en word.start()-1
     let tag_re = regex::Regex::new(r"(?:^|\s)#(\w+)").unwrap();
     for cap in tag_re.captures_iter(text) {
         let word = cap.get(1).unwrap();
         facets.push(json!({
             "index": { "byteStart": word.start() - 1, "byteEnd": word.end() },
-            "features": [{
-                "$type": "app.bsky.richtext.facet#tag",
-                "tag": word.as_str(),
-            }]
+            "features": [{ "$type": "app.bsky.richtext.facet#tag", "tag": word.as_str() }]
         }));
     }
 
@@ -166,7 +158,6 @@ impl Provider for Bluesky {
     fn compose(&self, post: &SourcePost) -> anyhow::Result<PreparedPost> {
         let mut warnings = Vec::new();
 
-        // 1. Construir texto final: texto + hashtags al final.
         let mut text = post.text.clone();
         if !post.hashtags.is_empty() {
             if !text.is_empty() {
@@ -181,15 +172,11 @@ impl Provider for Bluesky {
             }
         }
 
-        // 2. Validar longitud en grafemas.
         let graphemes = text.graphemes(true).count();
         if graphemes > MAX_GRAPHEMES {
-            anyhow::bail!(
-                "Bluesky: texto de {graphemes} grafemas, máximo {MAX_GRAPHEMES}"
-            );
+            anyhow::bail!("Bluesky: texto de {graphemes} grafemas, máximo {MAX_GRAPHEMES}");
         }
 
-        // 3. Validar media.
         if post.media.len() > MAX_IMAGES {
             anyhow::bail!(
                 "Bluesky: max {MAX_IMAGES} imágenes, recibidas {}",
@@ -197,7 +184,6 @@ impl Provider for Bluesky {
             );
         }
 
-        // 4. Generar steps: una UploadMedia por imagen + CreatePost final.
         let mut steps = Vec::new();
         let mut media_refs = Vec::new();
         for (i, m) in post.media.iter().enumerate() {
@@ -214,11 +200,7 @@ impl Provider for Bluesky {
         }
 
         let facets = detect_facets(&text);
-        steps.push(Step::CreatePost {
-            text,
-            facets,
-            media_refs,
-        });
+        steps.push(Step::CreatePost { text, facets, media_refs });
 
         Ok(PreparedPost {
             account_id: self.account_id.clone(),
@@ -231,7 +213,6 @@ impl Provider for Bluesky {
     async fn execute(&self, prepared: &PreparedPost) -> anyhow::Result<PublishResult> {
         let s = self.ensure_session().await?;
 
-        // Subimos todas las medias primero, guardando blob por ref_id.
         let mut blobs: std::collections::HashMap<String, (Value, Option<String>)> =
             Default::default();
         let mut post_text = String::new();
@@ -245,11 +226,7 @@ impl Provider for Bluesky {
                     let blob = self.upload_blob(bytes, guess_mime(path)).await?;
                     blobs.insert(ref_id.clone(), (blob, alt.clone()));
                 }
-                Step::CreatePost {
-                    text,
-                    facets,
-                    media_refs,
-                } => {
+                Step::CreatePost { text, facets, media_refs } => {
                     post_text = text.clone();
                     post_facets = facets.clone();
                     post_media_refs = media_refs.clone();
@@ -257,7 +234,6 @@ impl Provider for Bluesky {
             }
         }
 
-        // Construimos el record AT.
         let mut record = json!({
             "$type": "app.bsky.feed.post",
             "text": post_text,
@@ -272,12 +248,7 @@ impl Provider for Bluesky {
             let images: Vec<Value> = post_media_refs
                 .iter()
                 .filter_map(|r| blobs.get(r))
-                .map(|(blob, alt)| {
-                    json!({
-                        "alt": alt.clone().unwrap_or_default(),
-                        "image": blob,
-                    })
-                })
+                .map(|(blob, alt)| json!({ "alt": alt.clone().unwrap_or_default(), "image": blob }))
                 .collect();
             record["embed"] = json!({
                 "$type": "app.bsky.embed.images",
@@ -285,17 +256,15 @@ impl Provider for Bluesky {
             });
         }
 
-        let body = json!({
-            "repo": s.did,
-            "collection": "app.bsky.feed.post",
-            "record": record,
-        });
-
         let res: Value = self
             .http
             .post(format!("{PDS}/xrpc/com.atproto.repo.createRecord"))
             .bearer_auth(&s.access_jwt)
-            .json(&body)
+            .json(&json!({
+                "repo": s.did,
+                "collection": "app.bsky.feed.post",
+                "record": record,
+            }))
             .send()
             .await?
             .error_for_status()?

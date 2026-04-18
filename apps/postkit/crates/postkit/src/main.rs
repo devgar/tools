@@ -1,14 +1,14 @@
-mod bluesky;
 mod config;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use postkit_core::{Provider, SourcePost};
+use postkit_providers_bluesky::Bluesky;
+use postkit_providers_x::X;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::bluesky::Bluesky;
 use crate::config::{AccountConfig, Config};
 
 #[derive(Parser)]
@@ -60,16 +60,26 @@ fn build_providers(cfg: &Config) -> HashMap<String, Arc<dyn Provider>> {
     let mut out: HashMap<String, Arc<dyn Provider>> = HashMap::new();
     for (id, acc) in &cfg.accounts {
         match acc {
-            AccountConfig::Bluesky {
-                handle,
-                app_password,
+            AccountConfig::Bluesky { handle, app_password } => {
+                out.insert(
+                    id.clone(),
+                    Arc::new(Bluesky::new(id.clone(), handle.clone(), app_password.clone())),
+                );
+            }
+            AccountConfig::X {
+                api_key,
+                api_secret,
+                access_token,
+                access_token_secret,
             } => {
                 out.insert(
                     id.clone(),
-                    Arc::new(Bluesky::new(
+                    Arc::new(X::new(
                         id.clone(),
-                        handle.clone(),
-                        app_password.clone(),
+                        api_key.clone(),
+                        api_secret.clone(),
+                        access_token.clone(),
+                        access_token_secret.clone(),
                     )),
                 );
             }
