@@ -1,0 +1,9 @@
+services:
+  postkit-daemon:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+      - ${HOME}/.config/postkit:/config:ro
+    restart: unless-stopped

@@ -1,0 +1,10 @@
+# Ejemplo de SourcePost. Uso: postkit compose post.example.toml
+
+text = "Probando postkit, un scheduler multi-red en Rust 🦀. Código en https://github.com/devgar/tools"
+
+hashtags = ["rust", "opensource"]
+
+# Descomentar para incluir imágenes:
+# [[media]]
+# path = "/home/gar/Pictures/demo.png"
+# alt = "Terminal mostrando el output de postkit verify"

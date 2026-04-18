@@ -1,0 +1,4 @@
+db_path          = "/data/postkit.db"
+listen           = "0.0.0.0:8080"
+poll_interval_secs = 30
+accounts_config  = "/config/config.toml"

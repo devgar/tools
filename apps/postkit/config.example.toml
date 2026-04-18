@@ -1,0 +1,17 @@
+# Ejemplo de config. Cópialo a ~/.config/postkit/config.toml
+# y rellena con tus credenciales.
+#
+# IMPORTANTE para Bluesky:
+# Genera una app password en https://bsky.app/settings/app-passwords
+# NUNCA pongas aquí tu contraseña principal.
+
+[accounts.personal]
+provider = "bluesky"
+handle = "tuhandle.bsky.social"
+app_password = "xxxx-xxxx-xxxx-xxxx"
+
+# Puedes tener varias cuentas del mismo provider
+# [accounts.proyecto]
+# provider = "bluesky"
+# handle = "proyecto.bsky.social"
+# app_password = "yyyy-yyyy-yyyy-yyyy"

@@ -3,6 +3,8 @@ members = [
     "crates/postkit-core",
     "crates/postkit-providers-bluesky",
     "crates/postkit-providers-x",
+    "crates/postkit-store",
+    "crates/postkit-daemon",
     "crates/postkit",
 ]
 resolver = "2"
@@ -15,6 +17,7 @@ license = "MIT"
 [workspace.dependencies]
 anyhow = "1"
 async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
