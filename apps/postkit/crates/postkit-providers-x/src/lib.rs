@@ -305,3 +305,106 @@ impl Provider for X {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use postkit_core::{MediaRef, SourcePost};
+    use std::path::PathBuf;
+
+    fn provider() -> X {
+        X::new("test".into(), "key".into(), "secret".into(), "token".into(), "tsecret".into())
+    }
+
+    fn src(text: &str) -> SourcePost {
+        SourcePost { text: text.into(), media: vec![], hashtags: vec![] }
+    }
+
+    #[test]
+    fn compose_basic_post() {
+        let result = provider().compose(&src("Hello X")).unwrap();
+        assert!(result.warnings.is_empty());
+        match &result.steps[0] {
+            Step::CreatePost { text, media_refs, .. } => {
+                assert_eq!(text, "Hello X");
+                assert!(media_refs.is_empty());
+            }
+            _ => panic!("expected CreatePost"),
+        }
+    }
+
+    #[test]
+    fn compose_appends_hashtags() {
+        let source = SourcePost {
+            text: "Hello".into(),
+            hashtags: vec!["rust".into(), "opensource".into()],
+            media: vec![],
+        };
+        let result = provider().compose(&source).unwrap();
+        match &result.steps[0] {
+            Step::CreatePost { text, .. } => assert_eq!(text, "Hello\n\n#rust #opensource"),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn compose_rejects_over_280_graphemes() {
+        assert!(provider().compose(&src(&"a".repeat(281))).is_err());
+    }
+
+    #[test]
+    fn compose_allows_exactly_280_graphemes() {
+        assert!(provider().compose(&src(&"a".repeat(280))).is_ok());
+    }
+
+    #[test]
+    fn compose_counts_emoji_as_one_grapheme() {
+        let text = format!("{}{}", "a".repeat(279), "🦀");
+        assert!(provider().compose(&src(&text)).is_ok());
+    }
+
+    #[test]
+    fn compose_rejects_more_than_4_images() {
+        let media = (0..5)
+            .map(|i| MediaRef { path: PathBuf::from(format!("img{i}.png")), alt: None })
+            .collect();
+        let source = SourcePost { text: "test".into(), media, hashtags: vec![] };
+        assert!(provider().compose(&source).is_err());
+    }
+
+    #[test]
+    fn compose_warns_on_missing_alt() {
+        let source = SourcePost {
+            text: "test".into(),
+            media: vec![MediaRef { path: PathBuf::from("img.png"), alt: None }],
+            hashtags: vec![],
+        };
+        let result = provider().compose(&source).unwrap();
+        assert!(!result.warnings.is_empty());
+    }
+
+    #[test]
+    fn compose_no_facets_in_steps() {
+        // X no usa facets AT — el array debe estar vacío
+        let result = provider().compose(&src("Visit https://example.com")).unwrap();
+        match &result.steps[0] {
+            Step::CreatePost { facets, .. } => {
+                assert!(facets.as_array().unwrap().is_empty());
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn compose_generates_upload_steps_for_media() {
+        let source = SourcePost {
+            text: "test".into(),
+            media: vec![MediaRef { path: PathBuf::from("a.jpg"), alt: Some("desc".into()) }],
+            hashtags: vec![],
+        };
+        let result = provider().compose(&source).unwrap();
+        assert_eq!(result.steps.len(), 2);
+        assert!(matches!(result.steps[0], Step::UploadMedia { .. }));
+        assert!(matches!(result.steps[1], Step::CreatePost { .. }));
+    }
+}

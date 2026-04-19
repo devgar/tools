@@ -282,3 +282,153 @@ impl Provider for Bluesky {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use postkit_core::{MediaRef, SourcePost};
+    use std::path::PathBuf;
+
+    fn provider() -> Bluesky {
+        Bluesky::new("test".into(), "test.bsky.social".into(), "pw".into())
+    }
+
+    fn src(text: &str) -> SourcePost {
+        SourcePost { text: text.into(), media: vec![], hashtags: vec![] }
+    }
+
+    #[test]
+    fn compose_basic_post() {
+        let result = provider().compose(&src("Hello world")).unwrap();
+        assert!(result.warnings.is_empty());
+        match &result.steps[0] {
+            Step::CreatePost { text, media_refs, .. } => {
+                assert_eq!(text, "Hello world");
+                assert!(media_refs.is_empty());
+            }
+            _ => panic!("expected CreatePost"),
+        }
+    }
+
+    #[test]
+    fn compose_appends_hashtags() {
+        let source = SourcePost {
+            text: "Hello".into(),
+            hashtags: vec!["rust".into(), "dev".into()],
+            media: vec![],
+        };
+        let result = provider().compose(&source).unwrap();
+        match &result.steps[0] {
+            Step::CreatePost { text, .. } => assert_eq!(text, "Hello\n\n#rust #dev"),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn compose_rejects_over_300_graphemes() {
+        // 301 grafemas simples
+        assert!(provider().compose(&src(&"a".repeat(301))).is_err());
+    }
+
+    #[test]
+    fn compose_allows_exactly_300_graphemes() {
+        assert!(provider().compose(&src(&"a".repeat(300))).is_ok());
+    }
+
+    #[test]
+    fn compose_counts_emoji_as_one_grapheme() {
+        // 1 emoji = 1 grafema; 299 + emoji = 300 → ok
+        let text = format!("{}{}", "a".repeat(299), "🦀");
+        assert!(provider().compose(&src(&text)).is_ok());
+    }
+
+    #[test]
+    fn compose_rejects_more_than_4_images() {
+        let media = (0..5)
+            .map(|i| MediaRef { path: PathBuf::from(format!("img{i}.png")), alt: None })
+            .collect();
+        let source = SourcePost { text: "test".into(), media, hashtags: vec![] };
+        assert!(provider().compose(&source).is_err());
+    }
+
+    #[test]
+    fn compose_warns_on_missing_alt() {
+        let source = SourcePost {
+            text: "test".into(),
+            media: vec![MediaRef { path: PathBuf::from("img.png"), alt: None }],
+            hashtags: vec![],
+        };
+        let result = provider().compose(&source).unwrap();
+        assert!(!result.warnings.is_empty());
+    }
+
+    #[test]
+    fn compose_no_warning_with_alt() {
+        let source = SourcePost {
+            text: "test".into(),
+            media: vec![MediaRef { path: PathBuf::from("img.png"), alt: Some("desc".into()) }],
+            hashtags: vec![],
+        };
+        let result = provider().compose(&source).unwrap();
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn compose_detects_url_facet() {
+        let result = provider().compose(&src("Visit https://rust-lang.org please")).unwrap();
+        match &result.steps[0] {
+            Step::CreatePost { facets, .. } => {
+                let arr = facets.as_array().unwrap();
+                assert_eq!(arr.len(), 1);
+                assert_eq!(arr[0]["features"][0]["$type"], "app.bsky.richtext.facet#link");
+                assert_eq!(arr[0]["features"][0]["uri"], "https://rust-lang.org");
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn compose_detects_hashtag_facet() {
+        let result = provider().compose(&src("Hello #rust world")).unwrap();
+        match &result.steps[0] {
+            Step::CreatePost { facets, .. } => {
+                let arr = facets.as_array().unwrap();
+                assert_eq!(arr.len(), 1);
+                assert_eq!(arr[0]["features"][0]["$type"], "app.bsky.richtext.facet#tag");
+                assert_eq!(arr[0]["features"][0]["tag"], "rust");
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn compose_facet_byte_offsets_are_correct() {
+        // "Visit " = 6 bytes, "https://rust-lang.org" = 21 bytes → end = 27
+        let result = provider().compose(&src("Visit https://rust-lang.org end")).unwrap();
+        match &result.steps[0] {
+            Step::CreatePost { facets, .. } => {
+                let f = &facets.as_array().unwrap()[0];
+                assert_eq!(f["index"]["byteStart"], 6);
+                assert_eq!(f["index"]["byteEnd"], 27);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn compose_generates_upload_steps_for_media() {
+        let source = SourcePost {
+            text: "test".into(),
+            media: vec![
+                MediaRef { path: PathBuf::from("a.png"), alt: Some("A".into()) },
+                MediaRef { path: PathBuf::from("b.png"), alt: Some("B".into()) },
+            ],
+            hashtags: vec![],
+        };
+        let result = provider().compose(&source).unwrap();
+        assert_eq!(result.steps.len(), 3); // 2 uploads + 1 create
+        assert!(matches!(result.steps[0], Step::UploadMedia { .. }));
+        assert!(matches!(result.steps[1], Step::UploadMedia { .. }));
+        assert!(matches!(result.steps[2], Step::CreatePost { .. }));
+    }
+}

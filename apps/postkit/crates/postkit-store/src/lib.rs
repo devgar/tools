@@ -67,7 +67,11 @@ pub struct Store {
 
 impl Store {
     pub async fn open(path: &str) -> anyhow::Result<Self> {
-        let url = format!("sqlite:{path}?mode=rwc");
+        let url = if path == ":memory:" {
+            "sqlite::memory:".to_string()
+        } else {
+            format!("sqlite:{path}?mode=rwc")
+        };
         let pool = SqlitePool::connect(&url).await?;
         sqlx::migrate!().run(&pool).await?;
         Ok(Self { pool })
@@ -179,5 +183,151 @@ impl Store {
         .await?
         .rows_affected();
         Ok(n > 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Duration, Utc};
+
+    async fn mem_store() -> Store {
+        Store::open(":memory:").await.unwrap()
+    }
+
+    const SRC: &str = r#"{"text":"hola","media":[],"hashtags":[]}"#;
+
+    #[tokio::test]
+    async fn schedule_creates_pending_record() {
+        let s = mem_store().await;
+        let id = s.schedule("personal", "bluesky", SRC, Utc::now()).await.unwrap();
+        assert_eq!(id, 1);
+
+        let all = s.list(&ListFilters::default()).await.unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].status, "pending");
+        assert_eq!(all[0].account_id, "personal");
+    }
+
+    #[tokio::test]
+    async fn list_filter_by_status() {
+        let s = mem_store().await;
+        let id1 = s.schedule("a", "bluesky", SRC, Utc::now()).await.unwrap();
+        let _id2 = s.schedule("b", "x", SRC, Utc::now()).await.unwrap();
+        s.mark_failed(id1, "boom").await.unwrap();
+
+        let pending = s
+            .list(&ListFilters { status: Some("pending".into()), ..Default::default() })
+            .await
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].account_id, "b");
+
+        let failed = s
+            .list(&ListFilters { status: Some("failed".into()), ..Default::default() })
+            .await
+            .unwrap();
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].error.as_deref(), Some("boom"));
+    }
+
+    #[tokio::test]
+    async fn list_filter_by_provider_and_account() {
+        let s = mem_store().await;
+        s.schedule("alice", "bluesky", SRC, Utc::now()).await.unwrap();
+        s.schedule("bob", "x", SRC, Utc::now()).await.unwrap();
+
+        let bsky = s
+            .list(&ListFilters { provider: Some("bluesky".into()), ..Default::default() })
+            .await
+            .unwrap();
+        assert_eq!(bsky.len(), 1);
+        assert_eq!(bsky[0].account_id, "alice");
+
+        let bob = s
+            .list(&ListFilters { account_id: Some("bob".into()), ..Default::default() })
+            .await
+            .unwrap();
+        assert_eq!(bob.len(), 1);
+        assert_eq!(bob[0].provider, "x");
+    }
+
+    #[tokio::test]
+    async fn list_filter_by_date_range() {
+        let s = mem_store().await;
+        let past = Utc::now() - Duration::hours(2);
+        let future = Utc::now() + Duration::hours(2);
+        s.schedule("a", "bluesky", SRC, past).await.unwrap();
+        s.schedule("b", "bluesky", SRC, future).await.unwrap();
+
+        let only_past = s
+            .list(&ListFilters {
+                to: Some(Utc::now()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(only_past.len(), 1);
+        assert_eq!(only_past[0].account_id, "a");
+    }
+
+    #[tokio::test]
+    async fn list_pagination() {
+        let s = mem_store().await;
+        for i in 0..5 {
+            s.schedule(&format!("acc{i}"), "bluesky", SRC, Utc::now()).await.unwrap();
+        }
+        let page = s
+            .list(&ListFilters { limit: Some(2), offset: Some(1), ..Default::default() })
+            .await
+            .unwrap();
+        assert_eq!(page.len(), 2);
+        assert_eq!(page[0].account_id, "acc1");
+    }
+
+    #[tokio::test]
+    async fn claim_due_returns_past_pending() {
+        let s = mem_store().await;
+        let past = Utc::now() - Duration::seconds(10);
+        let future = Utc::now() + Duration::hours(1);
+        s.schedule("due", "bluesky", SRC, past).await.unwrap();
+        s.schedule("not_due", "bluesky", SRC, future).await.unwrap();
+
+        let claimed = s.claim_due().await.unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].account_id, "due");
+        assert_eq!(claimed[0].status, "running");
+
+        // El mismo post no debe reclamarse dos veces
+        let again = s.claim_due().await.unwrap();
+        assert!(again.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mark_published_updates_fields() {
+        let s = mem_store().await;
+        let id = s.schedule("a", "bluesky", SRC, Utc::now()).await.unwrap();
+        s.mark_published(id, Some("https://bsky.app/profile/a/post/123")).await.unwrap();
+
+        let post = &s.list(&ListFilters::default()).await.unwrap()[0];
+        assert_eq!(post.status, "published");
+        assert_eq!(post.post_url.as_deref(), Some("https://bsky.app/profile/a/post/123"));
+        assert!(post.published_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn cancel_pending_returns_true() {
+        let s = mem_store().await;
+        let id = s.schedule("a", "bluesky", SRC, Utc::now()).await.unwrap();
+        assert!(s.cancel(id).await.unwrap());
+        assert!(!s.cancel(id).await.unwrap()); // ya cancelado
+    }
+
+    #[tokio::test]
+    async fn cancel_non_pending_returns_false() {
+        let s = mem_store().await;
+        let id = s.schedule("a", "bluesky", SRC, Utc::now()).await.unwrap();
+        s.mark_published(id, None).await.unwrap();
+        assert!(!s.cancel(id).await.unwrap());
     }
 }
