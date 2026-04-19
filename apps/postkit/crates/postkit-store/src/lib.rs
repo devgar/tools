@@ -229,6 +229,21 @@ impl Store {
         Ok(())
     }
 
+    /// Resetea un post 'failed' a 'pending' con attempts=0 y scheduled_at=ahora.
+    /// Devuelve true si se reintentó, false si el post no existe o no está en failed.
+    pub async fn retry(&self, id: i64) -> anyhow::Result<bool> {
+        let n = sqlx::query(
+            "UPDATE scheduled_posts \
+             SET status='pending', attempts=0, scheduled_at=unixepoch(), error=NULL \
+             WHERE id=? AND status='failed'",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        Ok(n > 0)
+    }
+
     /// Cancela un post si está en estado 'pending'. Devuelve true si se canceló.
     pub async fn cancel(&self, id: i64) -> anyhow::Result<bool> {
         let n = sqlx::query(

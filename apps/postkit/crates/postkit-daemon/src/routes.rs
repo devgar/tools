@@ -1,7 +1,8 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, Query, Request, State},
     http::StatusCode,
-    response::Json,
+    middleware::{self, Next},
+    response::{Json, Response},
     routing::{get, post},
     Router,
 };
@@ -15,15 +16,42 @@ use std::sync::Arc;
 pub struct AppState {
     pub store: Store,
     pub providers: Arc<HashMap<String, Arc<dyn Provider>>>,
+    /// None → sin autenticación (dev local).
+    pub api_key: Option<String>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
-    Router::new()
-        .route("/health", get(health))
+    let protected = Router::new()
         .route("/schedule", post(schedule_post))
         .route("/scheduled", get(list_scheduled))
         .route("/scheduled/{id}", get(get_scheduled).delete(cancel_scheduled))
+        .route("/scheduled/{id}/retry", post(retry_scheduled))
+        .layer(middleware::from_fn_with_state(state.clone(), auth));
+
+    Router::new()
+        .route("/health", get(health))
+        .merge(protected)
         .with_state(state)
+}
+
+// ─── Auth middleware ──────────────────────────────────────────────────────────
+
+async fn auth(
+    State(state): State<Arc<AppState>>,
+    req: Request,
+    next: Next,
+) -> Result<Response, (StatusCode, &'static str)> {
+    if let Some(expected) = &state.api_key {
+        let provided = req
+            .headers()
+            .get("X-Api-Key")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if provided != expected {
+            return Err((StatusCode::UNAUTHORIZED, "API key inválida o ausente"));
+        }
+    }
+    Ok(next.run(req).await)
 }
 
 // ─── GET /health ─────────────────────────────────────────────────────────────
@@ -35,10 +63,7 @@ struct Health {
 }
 
 async fn health() -> Json<Health> {
-    Json(Health {
-        status: "ok",
-        version: env!("CARGO_PKG_VERSION"),
-    })
+    Json(Health { status: "ok", version: env!("CARGO_PKG_VERSION") })
 }
 
 // ─── POST /schedule ──────────────────────────────────────────────────────────
@@ -51,14 +76,14 @@ pub struct ScheduleBody {
 }
 
 #[derive(Serialize)]
-struct ScheduleResponse {
+struct IdResponse {
     id: i64,
 }
 
 async fn schedule_post(
     State(state): State<Arc<AppState>>,
     Json(body): Json<ScheduleBody>,
-) -> Result<Json<ScheduleResponse>, (StatusCode, String)> {
+) -> Result<Json<IdResponse>, (StatusCode, String)> {
     let provider = state
         .providers
         .get(&body.account_id)
@@ -74,7 +99,7 @@ async fn schedule_post(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    Ok(Json(ScheduleResponse { id }))
+    Ok(Json(IdResponse { id }))
 }
 
 // ─── GET /scheduled ──────────────────────────────────────────────────────────
@@ -94,18 +119,17 @@ async fn list_scheduled(
     State(state): State<Arc<AppState>>,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<Vec<ScheduledPost>>, (StatusCode, String)> {
-    let filters = ListFilters {
-        account_id: q.account_id,
-        provider: q.provider,
-        status: q.status,
-        from: q.from,
-        to: q.to,
-        limit: q.limit,
-        offset: q.offset,
-    };
     let posts = state
         .store
-        .list(&filters)
+        .list(&ListFilters {
+            account_id: q.account_id,
+            provider: q.provider,
+            status: q.status,
+            from: q.from,
+            to: q.to,
+            limit: q.limit,
+            offset: q.offset,
+        })
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(posts))
@@ -132,17 +156,32 @@ async fn cancel_scheduled(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let cancelled = state
+    let ok = state
         .store
         .cancel(id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    if cancelled {
+    if ok {
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err((
-            StatusCode::NOT_FOUND,
-            format!("post {id} no encontrado o no está en estado pending"),
-        ))
+        Err((StatusCode::NOT_FOUND, format!("post {id} no encontrado o no está en pending")))
+    }
+}
+
+// ─── POST /scheduled/:id/retry ───────────────────────────────────────────────
+
+async fn retry_scheduled(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let ok = state
+        .store
+        .retry(id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if ok {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((StatusCode::NOT_FOUND, format!("post {id} no encontrado o no está en failed")))
     }
 }

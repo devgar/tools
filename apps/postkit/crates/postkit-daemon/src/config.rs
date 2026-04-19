@@ -13,6 +13,8 @@ pub struct DaemonConfig {
     pub max_attempts: u32,
     #[serde(default = "default_retry_delay")]
     pub retry_delay_secs: u64,
+    /// Si se omite, el daemon no requiere autenticación (útil en dev local).
+    pub api_key: Option<String>,
 }
 
 fn default_poll() -> u64 { 30 }

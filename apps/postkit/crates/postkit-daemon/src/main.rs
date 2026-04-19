@@ -43,6 +43,7 @@ async fn main() -> Result<()> {
     let state = Arc::new(AppState {
         store: store.clone(),
         providers: providers.clone(),
+        api_key: cfg.api_key,
     });
 
     let addr: SocketAddr = cfg.listen.parse()?;
