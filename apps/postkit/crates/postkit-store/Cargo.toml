@@ -10,6 +10,7 @@ chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
+tracing = "0.1"
 
 [dev-dependencies]
 tokio = { workspace = true }

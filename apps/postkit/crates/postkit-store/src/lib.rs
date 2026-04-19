@@ -77,7 +77,22 @@ impl Store {
         };
         let pool = SqlitePool::connect(&url).await?;
         sqlx::migrate!().run(&pool).await?;
-        Ok(Self { pool })
+        let store = Self { pool };
+        store.recover_running().await?;
+        Ok(store)
+    }
+
+    pub(crate) async fn recover_running(&self) -> anyhow::Result<()> {
+        let n = sqlx::query(
+            "UPDATE scheduled_posts SET status='pending' WHERE status='running'",
+        )
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        if n > 0 {
+            tracing::warn!("recover_running: {} posts rescatados de estado 'running'", n);
+        }
+        Ok(())
     }
 
     pub async fn schedule(
@@ -469,6 +484,20 @@ mod tests {
         assert_eq!(post.status, "pending");
         assert_eq!(post.attempts, 0);
         assert!(post.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn open_recovers_running_to_pending() {
+        let s = mem_store().await;
+        let past = Utc::now() - Duration::seconds(10);
+        let id = s.schedule("a", "bluesky", SRC, past).await.unwrap();
+        s.claim_due().await.unwrap(); // → running
+
+        assert_eq!(s.get_by_id(id).await.unwrap().unwrap().status, "running");
+
+        // simula reinicio: recover_running se llama en open(), lo llamamos directamente
+        s.recover_running().await.unwrap();
+        assert_eq!(s.get_by_id(id).await.unwrap().unwrap().status, "pending");
     }
 
     #[tokio::test]
