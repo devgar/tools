@@ -173,6 +173,17 @@ impl Store {
         Ok(())
     }
 
+    pub async fn get_by_id(&self, id: i64) -> anyhow::Result<Option<ScheduledPost>> {
+        let row = sqlx::query_as::<_, Row>(
+            "SELECT id, account_id, provider, source_post, scheduled_at, status, \
+             published_at, post_url, error, created_at FROM scheduled_posts WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(Into::into))
+    }
+
     /// Cancela un post si está en estado 'pending'. Devuelve true si se canceló.
     pub async fn cancel(&self, id: i64) -> anyhow::Result<bool> {
         let n = sqlx::query(

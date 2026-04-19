@@ -2,7 +2,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::Json,
-    routing::{delete, get, post},
+    routing::{get, post},
     Router,
 };
 use chrono::{DateTime, Utc};
@@ -19,10 +19,26 @@ pub struct AppState {
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
+        .route("/health", get(health))
         .route("/schedule", post(schedule_post))
         .route("/scheduled", get(list_scheduled))
-        .route("/scheduled/{id}", delete(cancel_scheduled))
+        .route("/scheduled/{id}", get(get_scheduled).delete(cancel_scheduled))
         .with_state(state)
+}
+
+// ─── GET /health ─────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct Health {
+    status: &'static str,
+    version: &'static str,
+}
+
+async fn health() -> Json<Health> {
+    Json(Health {
+        status: "ok",
+        version: env!("CARGO_PKG_VERSION"),
+    })
 }
 
 // ─── POST /schedule ──────────────────────────────────────────────────────────
@@ -93,6 +109,21 @@ async fn list_scheduled(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(posts))
+}
+
+// ─── GET /scheduled/:id ──────────────────────────────────────────────────────
+
+async fn get_scheduled(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+) -> Result<Json<ScheduledPost>, (StatusCode, String)> {
+    state
+        .store
+        .get_by_id(id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map(Json)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("post {id} no encontrado")))
 }
 
 // ─── DELETE /scheduled/:id ───────────────────────────────────────────────────
