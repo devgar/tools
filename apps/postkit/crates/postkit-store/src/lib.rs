@@ -401,4 +401,58 @@ mod tests {
         s.mark_published(id, None).await.unwrap();
         assert!(!s.cancel(id).await.unwrap());
     }
+
+    #[tokio::test]
+    async fn attempt_or_fail_reschedules_when_under_max() {
+        let s = mem_store().await;
+        let past = Utc::now() - Duration::seconds(10);
+        let id = s.schedule("a", "bluesky", SRC, past).await.unwrap();
+        s.claim_due().await.unwrap(); // status → running
+
+        s.attempt_or_fail(id, "transient error", 3, 60).await.unwrap();
+
+        let post = s.get_by_id(id).await.unwrap().unwrap();
+        assert_eq!(post.status, "pending");
+        assert_eq!(post.attempts, 1);
+        assert!(post.scheduled_at > Utc::now()); // rescheduled in future
+        assert_eq!(post.error.as_deref(), Some("transient error"));
+    }
+
+    #[tokio::test]
+    async fn attempt_or_fail_marks_failed_after_max_attempts() {
+        let s = mem_store().await;
+        let past = Utc::now() - Duration::seconds(10);
+        let id = s.schedule("a", "bluesky", SRC, past).await.unwrap();
+        s.claim_due().await.unwrap();
+
+        s.attempt_or_fail(id, "boom", 1, 60).await.unwrap();
+
+        let post = s.get_by_id(id).await.unwrap().unwrap();
+        assert_eq!(post.status, "failed");
+        assert_eq!(post.attempts, 1);
+        assert_eq!(post.error.as_deref(), Some("boom"));
+    }
+
+    #[tokio::test]
+    async fn retry_resets_failed_to_pending() {
+        let s = mem_store().await;
+        let id = s.schedule("a", "bluesky", SRC, Utc::now()).await.unwrap();
+        s.mark_failed(id, "old error").await.unwrap();
+
+        assert!(s.retry(id).await.unwrap());
+
+        let post = s.get_by_id(id).await.unwrap().unwrap();
+        assert_eq!(post.status, "pending");
+        assert_eq!(post.attempts, 0);
+        assert!(post.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn retry_returns_false_for_non_failed() {
+        let s = mem_store().await;
+        let id = s.schedule("a", "bluesky", SRC, Utc::now()).await.unwrap();
+        // still pending — retry should be a no-op
+        assert!(!s.retry(id).await.unwrap());
+        assert_eq!(s.get_by_id(id).await.unwrap().unwrap().status, "pending");
+    }
 }
