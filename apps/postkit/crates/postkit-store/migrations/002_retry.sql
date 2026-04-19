@@ -1,0 +1,1 @@
+ALTER TABLE scheduled_posts ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;

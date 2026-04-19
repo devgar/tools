@@ -1,6 +1,6 @@
 use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::{Row as _, SqlitePool};
 
 /// Fila pública expuesta por la store. Los timestamps se exponen como DateTime<Utc>.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -11,6 +11,7 @@ pub struct ScheduledPost {
     pub source_post: String,
     pub scheduled_at: DateTime<Utc>,
     pub status: String,
+    pub attempts: i64,
     pub published_at: Option<DateTime<Utc>>,
     pub post_url: Option<String>,
     pub error: Option<String>,
@@ -26,6 +27,7 @@ struct Row {
     source_post: String,
     scheduled_at: i64,
     status: String,
+    attempts: i64,
     published_at: Option<i64>,
     post_url: Option<String>,
     error: Option<String>,
@@ -41,6 +43,7 @@ impl From<Row> for ScheduledPost {
             source_post: r.source_post,
             scheduled_at: Utc.timestamp_opt(r.scheduled_at, 0).single().unwrap_or_default(),
             status: r.status,
+            attempts: r.attempts,
             published_at: r.published_at.and_then(|t| Utc.timestamp_opt(t, 0).single()),
             post_url: r.post_url,
             error: r.error,
@@ -100,7 +103,7 @@ impl Store {
 
     pub async fn list(&self, f: &ListFilters) -> anyhow::Result<Vec<ScheduledPost>> {
         let mut qb = sqlx::QueryBuilder::new(
-            "SELECT id, account_id, provider, source_post, scheduled_at, status, \
+            "SELECT id, account_id, provider, source_post, scheduled_at, status, attempts, \
              published_at, post_url, error, created_at FROM scheduled_posts WHERE 1=1",
         );
         if let Some(ref v) = f.account_id {
@@ -143,7 +146,7 @@ impl Store {
                  WHERE status = 'pending' AND scheduled_at <= unixepoch() \
                  LIMIT 10 \
              ) \
-             RETURNING id, account_id, provider, source_post, scheduled_at, status, \
+             RETURNING id, account_id, provider, source_post, scheduled_at, status, attempts, \
                        published_at, post_url, error, created_at",
         )
         .fetch_all(&self.pool)
@@ -175,13 +178,55 @@ impl Store {
 
     pub async fn get_by_id(&self, id: i64) -> anyhow::Result<Option<ScheduledPost>> {
         let row = sqlx::query_as::<_, Row>(
-            "SELECT id, account_id, provider, source_post, scheduled_at, status, \
+            "SELECT id, account_id, provider, source_post, scheduled_at, status, attempts, \
              published_at, post_url, error, created_at FROM scheduled_posts WHERE id = ?",
         )
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(Into::into))
+    }
+
+    /// Si quedan intentos disponibles, reprograma el post con backoff exponencial.
+    /// Si se agotaron los intentos, lo marca como 'failed'.
+    pub async fn attempt_or_fail(
+        &self,
+        id: i64,
+        error: &str,
+        max_attempts: u32,
+        base_delay_secs: u64,
+    ) -> anyhow::Result<()> {
+        let row = sqlx::query("SELECT attempts FROM scheduled_posts WHERE id = ?")
+            .bind(id)
+            .fetch_one(&self.pool)
+            .await?;
+        let attempts: i64 = row.get(0);
+        let new_attempts = attempts + 1;
+
+        if new_attempts >= max_attempts as i64 {
+            sqlx::query(
+                "UPDATE scheduled_posts SET status='failed', error=?, attempts=? WHERE id=?",
+            )
+            .bind(error)
+            .bind(new_attempts)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        } else {
+            // backoff exponencial: delay * 2^attempts
+            let delay = base_delay_secs.saturating_mul(1u64 << attempts);
+            let retry_at = Utc::now().timestamp() + delay as i64;
+            sqlx::query(
+                "UPDATE scheduled_posts SET status='pending', error=?, attempts=?, scheduled_at=? WHERE id=?",
+            )
+            .bind(error)
+            .bind(new_attempts)
+            .bind(retry_at)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(())
     }
 
     /// Cancela un post si está en estado 'pending'. Devuelve true si se canceló.

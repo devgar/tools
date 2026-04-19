@@ -9,11 +9,15 @@ pub struct DaemonConfig {
     #[serde(default = "default_poll")]
     pub poll_interval_secs: u64,
     pub accounts_config: String,
+    #[serde(default = "default_max_attempts")]
+    pub max_attempts: u32,
+    #[serde(default = "default_retry_delay")]
+    pub retry_delay_secs: u64,
 }
 
-fn default_poll() -> u64 {
-    30
-}
+fn default_poll() -> u64 { 30 }
+fn default_max_attempts() -> u32 { 3 }
+fn default_retry_delay() -> u64 { 60 }
 
 impl DaemonConfig {
     pub fn load(path: &Path) -> anyhow::Result<Self> {

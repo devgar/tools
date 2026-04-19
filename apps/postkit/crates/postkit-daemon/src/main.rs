@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tracing::info;
 
 use config::{AccountConfig, DaemonConfig};
 
@@ -25,6 +26,13 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "postkit_daemon=info".parse().unwrap()),
+        )
+        .init();
+
     let cli = Cli::parse();
     let cfg = DaemonConfig::load(&cli.config)?;
 
@@ -40,9 +48,15 @@ async fn main() -> Result<()> {
     let addr: SocketAddr = cfg.listen.parse()?;
     let app = routes::router(state);
 
-    tokio::spawn(worker::run(store, providers, cfg.poll_interval_secs));
+    tokio::spawn(worker::run(
+        store,
+        providers,
+        cfg.poll_interval_secs,
+        cfg.max_attempts,
+        cfg.retry_delay_secs,
+    ));
 
-    println!("postkit-daemon escuchando en {addr}");
+    info!("postkit-daemon escuchando en {addr}");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
