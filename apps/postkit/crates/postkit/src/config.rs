@@ -6,6 +6,9 @@ use std::path::Path;
 pub struct Config {
     #[serde(default)]
     pub accounts: HashMap<String, AccountConfig>,
+    /// URL base del daemon para el subcomando `schedule`.
+    pub daemon_url: Option<String>,
+    pub daemon_api_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::watch;
 use tracing::info;
 
 use config::{AccountConfig, DaemonConfig};
@@ -49,18 +50,47 @@ async fn main() -> Result<()> {
     let addr: SocketAddr = cfg.listen.parse()?;
     let app = routes::router(state);
 
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
     tokio::spawn(worker::run(
         store,
         providers,
         cfg.poll_interval_secs,
         cfg.max_attempts,
         cfg.retry_delay_secs,
+        shutdown_rx,
     ));
 
     info!("postkit-daemon escuchando en {addr}");
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+
+    let _ = shutdown_tx.send(true);
+    info!("daemon detenido");
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c().await.expect("failed to install Ctrl+C handler");
+    };
+    #[cfg(unix)]
+    let sigterm = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let sigterm = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = sigterm => {}
+    }
+    info!("señal de cierre recibida");
 }
 
 fn build_providers(accounts: HashMap<String, AccountConfig>) -> HashMap<String, Arc<dyn Provider>> {

@@ -1,6 +1,7 @@
 mod config;
 
 use anyhow::{Context, Result};
+use reqwest;
 use clap::{Parser, Subcommand};
 use postkit_core::{Provider, SourcePost};
 use postkit_providers_bluesky::Bluesky;
@@ -14,7 +15,7 @@ use crate::config::{AccountConfig, Config};
 #[derive(Parser)]
 #[command(name = "postkit", about = "Multi-platform social media scheduler")]
 struct Cli {
-    /// Path al config. Admite `~/`.
+    /// Config file path. Accepts `~/`.
     #[arg(long, default_value = "~/.config/postkit/config.toml")]
     config: String,
 
@@ -24,26 +25,44 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Lista cuentas configuradas.
+    /// List configured accounts.
     Accounts,
 
-    /// Verifica credenciales de una o todas las cuentas.
+    /// Verify credentials for one or all accounts.
     Verify { account: Option<String> },
 
-    /// [iter 2] Compone un post y emite el plan JSON sin ejecutarlo.
+    /// Compose a post and emit the JSON plan without executing it.
     Compose {
-        /// TOML con el SourcePost.
+        /// TOML with the SourcePost.
         post: PathBuf,
-        /// Cuentas destino. Si se omite, todas.
+        /// Target accounts. If omitted, all.
         #[arg(long, num_args = 0..)]
         targets: Vec<String>,
     },
 
-    /// [iter 3 lite] Compone y publica inmediatamente (sin scheduling).
+    /// Compose and publish immediately (without scheduling).
     Publish {
         post: PathBuf,
         #[arg(long, num_args = 0..)]
         targets: Vec<String>,
+    },
+
+    /// Schedule a post for future publication via the daemon.
+    Schedule {
+        /// TOML with the SourcePost.
+        post: PathBuf,
+        /// Target accounts. If omitted, all.
+        #[arg(long, num_args = 0..)]
+        targets: Vec<String>,
+        /// When to publish (RFC 3339, e.g., 2026-04-21T10:00:00Z).
+        #[arg(long)]
+        at: String,
+        /// Base URL of the daemon. Default: config daemon_url or http://localhost:8080.
+        #[arg(long)]
+        daemon: Option<String>,
+        /// API key of the daemon (X-Api-Key). Default: config daemon_api_key.
+        #[arg(long)]
+        api_key: Option<String>,
     },
 }
 
@@ -97,7 +116,7 @@ fn resolve_targets(
     }
     for t in targets {
         if !providers.contains_key(t) {
-            anyhow::bail!("cuenta desconocida: {t}");
+            anyhow::bail!("unknown account: {t}");
         }
     }
     Ok(targets.to_vec())
@@ -108,11 +127,11 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let config_path = expand_tilde(&cli.config);
     let cfg = Config::load(&config_path)
-        .with_context(|| format!("cargando config de {}", config_path.display()))?;
+        .with_context(|| format!("loading config from {}", config_path.display()))?;
     let providers = build_providers(&cfg);
 
     if providers.is_empty() {
-        eprintln!("⚠ no hay cuentas configuradas en {}", config_path.display());
+        eprintln!("⚠ no accounts configured in {}", config_path.display());
     }
 
     match cli.cmd {
@@ -130,7 +149,7 @@ async fn main() -> Result<()> {
             for id in ids {
                 let p = providers
                     .get(&id)
-                    .ok_or_else(|| anyhow::anyhow!("cuenta desconocida: {id}"))?;
+                    .ok_or_else(|| anyhow::anyhow!("unknown account: {id}"))?;
                 match p.verify().await {
                     Ok(info) => println!("✓ {id} → @{}", info.handle),
                     Err(e) => println!("✗ {id} → {e}"),
@@ -147,6 +166,46 @@ async fn main() -> Result<()> {
                 plans.push(p.compose(&source)?);
             }
             println!("{}", serde_json::to_string_pretty(&plans)?);
+        }
+
+        Cmd::Schedule { post, targets, at, daemon, api_key } => {
+            let source = load_post(&post)?;
+            let ids = resolve_targets(&providers, &targets)?;
+
+            let daemon_url = daemon
+                .or_else(|| cfg.daemon_url.clone())
+                .unwrap_or_else(|| "http://localhost:8080".to_string());
+            let api_key = api_key.or_else(|| cfg.daemon_api_key.clone());
+
+            let scheduled_at: chrono::DateTime<chrono::Utc> =
+                chrono::DateTime::parse_from_rfc3339(&at)
+                    .with_context(|| format!("invalid date: {at}"))?
+                    .into();
+
+            let client = reqwest::Client::new();
+            for id in ids {
+                let body = serde_json::json!({
+                    "account_id": id,
+                    "source_post": source,
+                    "scheduled_at": scheduled_at,
+                });
+                let mut req = client.post(format!("{daemon_url}/schedule")).json(&body);
+                if let Some(ref key) = api_key {
+                    req = req.header("X-Api-Key", key);
+                }
+                let resp = req
+                    .send()
+                    .await
+                    .with_context(|| format!("contacting daemon at {daemon_url}"))?;
+                let status = resp.status();
+                if status.is_success() {
+                    let json: serde_json::Value = resp.json().await?;
+                    println!("✓ {id} → id={}", json["id"]);
+                } else {
+                    let text = resp.text().await.unwrap_or_default();
+                    eprintln!("✗ {id} → HTTP {status}: {text}");
+                }
+            }
         }
 
         Cmd::Publish { post, targets } => {
@@ -173,7 +232,7 @@ async fn main() -> Result<()> {
 
 fn load_post(path: &std::path::Path) -> Result<SourcePost> {
     let text = std::fs::read_to_string(path)
-        .with_context(|| format!("leyendo post {}", path.display()))?;
+        .with_context(|| format!("reading post {}", path.display()))?;
     let post: SourcePost = toml::from_str(&text)?;
     Ok(post)
 }

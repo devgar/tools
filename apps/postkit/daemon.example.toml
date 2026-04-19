@@ -4,3 +4,4 @@ poll_interval_secs = 30
 max_attempts       = 3
 retry_delay_secs   = 60
 accounts_config    = "/config/config.toml"
+api_key 		   = "your_api_key_here"

@@ -2,6 +2,7 @@ use postkit_core::Provider;
 use postkit_store::{ScheduledPost, Store};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::watch;
 use tokio::time::{sleep, Duration};
 use tracing::{error, info, warn};
 
@@ -11,6 +12,7 @@ pub async fn run(
     poll_secs: u64,
     max_attempts: u32,
     retry_delay_secs: u64,
+    mut shutdown: watch::Receiver<bool>,
 ) {
     info!("worker iniciado (poll={}s, max_attempts={}, retry_delay={}s)", poll_secs, max_attempts, retry_delay_secs);
     loop {
@@ -42,8 +44,15 @@ pub async fn run(
             Ok(_) => {}
             Err(e) => error!("worker: error reclamando posts: {}", e),
         }
-        sleep(Duration::from_secs(poll_secs)).await;
+        tokio::select! {
+            _ = sleep(Duration::from_secs(poll_secs)) => {}
+            _ = shutdown.changed() => {
+                info!("worker: señal de cierre recibida, deteniendo");
+                break;
+            }
+        }
     }
+    info!("worker detenido");
 }
 
 async fn publish(

@@ -1383,10 +1383,12 @@ name = "postkit"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "postkit-core",
  "postkit-providers-bluesky",
  "postkit-providers-x",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",
