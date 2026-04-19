@@ -24,7 +24,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     let protected = Router::new()
         .route("/schedule", post(schedule_post))
         .route("/scheduled", get(list_scheduled))
-        .route("/scheduled/{id}", get(get_scheduled).delete(cancel_scheduled))
+        .route("/scheduled/{id}", get(get_scheduled).delete(cancel_scheduled).put(update_scheduled))
         .route("/scheduled/{id}/retry", post(retry_scheduled))
         .layer(middleware::from_fn_with_state(state.clone(), auth));
 
@@ -159,6 +159,41 @@ async fn cancel_scheduled(
     let ok = state
         .store
         .cancel(id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if ok {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((StatusCode::NOT_FOUND, format!("post {id} no encontrado o no está en pending")))
+    }
+}
+
+// ─── PUT /scheduled/:id ──────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct UpdateBody {
+    source_post: Option<postkit_core::SourcePost>,
+    scheduled_at: Option<DateTime<Utc>>,
+}
+
+async fn update_scheduled(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    Json(body): Json<UpdateBody>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if body.source_post.is_none() && body.scheduled_at.is_none() {
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, "nada que actualizar".into()));
+    }
+    let source_json = body
+        .source_post
+        .as_ref()
+        .map(|sp| serde_json::to_string(sp))
+        .transpose()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let ok = state
+        .store
+        .update(id, source_json.as_deref(), body.scheduled_at)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     if ok {
@@ -328,6 +363,67 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn update_not_found() {
+        let body = serde_json::json!({"scheduled_at": "2026-05-01T10:00:00Z"});
+        let resp = router(mem_state(None).await)
+            .oneshot(
+                Request::put("/scheduled/999")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn update_empty_body_returns_unprocessable() {
+        let resp = router(mem_state(None).await)
+            .oneshot(
+                Request::put("/scheduled/1")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn update_pending_post_succeeds() {
+        let state = mem_state_with_provider().await;
+        // create a post first
+        let schedule_body = serde_json::json!({
+            "account_id": "test",
+            "scheduled_at": "2026-04-21T10:00:00Z",
+            "source_post": {"text": "original", "media": [], "hashtags": []}
+        });
+        router(state.clone())
+            .oneshot(
+                Request::post("/schedule")
+                    .header("content-type", "application/json")
+                    .body(Body::from(schedule_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let update_body = serde_json::json!({"scheduled_at": "2026-05-01T12:00:00Z"});
+        let resp = router(state)
+            .oneshot(
+                Request::put("/scheduled/1")
+                    .header("content-type", "application/json")
+                    .body(Body::from(update_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]

@@ -229,6 +229,30 @@ impl Store {
         Ok(())
     }
 
+    /// Actualiza source_post y/o scheduled_at de un post en estado 'pending'.
+    /// Devuelve true si se actualizó, false si el post no existe o no está en pending.
+    pub async fn update(
+        &self,
+        id: i64,
+        source_post: Option<&str>,
+        scheduled_at: Option<DateTime<Utc>>,
+    ) -> anyhow::Result<bool> {
+        if source_post.is_none() && scheduled_at.is_none() {
+            return Ok(false);
+        }
+        let mut qb = sqlx::QueryBuilder::new("UPDATE scheduled_posts SET ");
+        let mut sep = qb.separated(", ");
+        if let Some(sp) = source_post {
+            sep.push("source_post = ").push_bind_unseparated(sp);
+        }
+        if let Some(at) = scheduled_at {
+            sep.push("scheduled_at = ").push_bind_unseparated(at.timestamp());
+        }
+        qb.push(" WHERE id = ").push_bind(id).push(" AND status = 'pending'");
+        let n = qb.build().execute(&self.pool).await?.rows_affected();
+        Ok(n > 0)
+    }
+
     /// Resetea un post 'failed' a 'pending' con attempts=0 y scheduled_at=ahora.
     /// Devuelve true si se reintentó, false si el post no existe o no está en failed.
     pub async fn retry(&self, id: i64) -> anyhow::Result<bool> {
@@ -445,6 +469,33 @@ mod tests {
         assert_eq!(post.status, "pending");
         assert_eq!(post.attempts, 0);
         assert!(post.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn update_pending_source_post() {
+        let s = mem_store().await;
+        let id = s.schedule("a", "bluesky", SRC, Utc::now()).await.unwrap();
+        assert!(s.update(id, Some(r#"{"text":"nuevo"}"#), None).await.unwrap());
+        let post = s.get_by_id(id).await.unwrap().unwrap();
+        assert_eq!(post.source_post, r#"{"text":"nuevo"}"#);
+    }
+
+    #[tokio::test]
+    async fn update_pending_scheduled_at() {
+        let s = mem_store().await;
+        let id = s.schedule("a", "bluesky", SRC, Utc::now()).await.unwrap();
+        let new_at = Utc::now() + Duration::hours(5);
+        assert!(s.update(id, None, Some(new_at)).await.unwrap());
+        let post = s.get_by_id(id).await.unwrap().unwrap();
+        assert!((post.scheduled_at - new_at).num_seconds().abs() < 2);
+    }
+
+    #[tokio::test]
+    async fn update_returns_false_for_non_pending() {
+        let s = mem_store().await;
+        let id = s.schedule("a", "bluesky", SRC, Utc::now()).await.unwrap();
+        s.mark_published(id, None).await.unwrap();
+        assert!(!s.update(id, Some(r#"{"text":"x"}"#), None).await.unwrap());
     }
 
     #[tokio::test]
