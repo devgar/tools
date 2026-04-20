@@ -103,3 +103,71 @@ impl IpcServer {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::test_utils::{serde_roundtrip as rt};
+
+    #[test]
+    fn popup_with_output_roundtrip() {
+        let msg = IpcMessage::Popup { name: "volume".to_string(), output: Some("HDMI-1".to_string()), keep: false };
+        match rt(&msg) {
+            IpcMessage::Popup { name, output, keep } => {
+                assert_eq!(name, "volume");
+                assert_eq!(output.as_deref(), Some("HDMI-1"));
+                assert!(!keep);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn popup_without_output_roundtrip() {
+        let msg = IpcMessage::Popup { name: "brightness".to_string(), output: None, keep: true };
+        match rt(&msg) {
+            IpcMessage::Popup { name, output, keep } => {
+                assert_eq!(name, "brightness");
+                assert!(output.is_none());
+                assert!(keep);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn close_popup_roundtrip() {
+        assert!(matches!(rt(&IpcMessage::ClosePopup), IpcMessage::ClosePopup));
+    }
+
+    #[test]
+    fn get_state_roundtrip() {
+        assert!(matches!(rt(&IpcMessage::GetState), IpcMessage::GetState));
+    }
+
+    #[test]
+    fn volume_actions_roundtrip() {
+        let cases = [
+            IpcMessage::Volume(VolumeAction::Up { step: 5 }),
+            IpcMessage::Volume(VolumeAction::Down { step: 3 }),
+            IpcMessage::Volume(VolumeAction::Set { percent: 80 }),
+            IpcMessage::Volume(VolumeAction::Mute),
+        ];
+        for msg in &cases {
+            assert_eq!(serde_json::to_string(&rt(msg)).unwrap(), serde_json::to_string(msg).unwrap());
+        }
+    }
+
+    #[test]
+    fn brightness_actions_roundtrip() {
+        let cases = [
+            IpcMessage::Brightness(BrightnessAction::Up { step: 10 }),
+            IpcMessage::Brightness(BrightnessAction::Down { step: 5 }),
+            IpcMessage::Brightness(BrightnessAction::Set { percent: 50 }),
+        ];
+        for msg in &cases {
+            assert_eq!(serde_json::to_string(&rt(msg)).unwrap(), serde_json::to_string(msg).unwrap());
+        }
+    }
+}

@@ -206,18 +206,12 @@ mod tests {
     }
 
     // ── read_battery_state_from ───────────────────────────────────────────────
-
-    fn make_sysfs(dir: &std::path::Path, name: &str, capacity: &str, status: &str) {
-        let bat = dir.join(name);
-        std::fs::create_dir_all(&bat).unwrap();
-        std::fs::write(bat.join("capacity"), capacity).unwrap();
-        std::fs::write(bat.join("status"), status).unwrap();
-    }
+    use crate::test_utils::{make_sysfs_files as make_sysfs};
 
     #[tokio::test]
     async fn sysfs_normal_values() {
         let tmp = tempfile::tempdir().unwrap();
-        make_sysfs(tmp.path(), "BAT0", "85\n", "Discharging\n");
+        make_sysfs(tmp.path(), "BAT0", &[("capacity", "85\n"), ("status", "Discharging\n")]);
         let state = read_battery_state_from("BAT0", tmp.path().to_str().unwrap())
             .await
             .unwrap();
@@ -229,7 +223,7 @@ mod tests {
     #[tokio::test]
     async fn sysfs_no_trailing_newline() {
         let tmp = tempfile::tempdir().unwrap();
-        make_sysfs(tmp.path(), "BAT0", "42", "Charging");
+        make_sysfs(tmp.path(), "BAT0", &[("capacity", "42"), ("status", "Charging")]);
         let state = read_battery_state_from("BAT0", tmp.path().to_str().unwrap())
             .await
             .unwrap();
@@ -241,7 +235,7 @@ mod tests {
     #[tokio::test]
     async fn sysfs_non_numeric_capacity_defaults_to_zero() {
         let tmp = tempfile::tempdir().unwrap();
-        make_sysfs(tmp.path(), "BAT0", "N/A\n", "Unknown\n");
+        make_sysfs(tmp.path(), "BAT0", &[("capacity", "N/A\n"), ("status", "Unknown\n")]);
         let state = read_battery_state_from("BAT0", tmp.path().to_str().unwrap())
             .await
             .unwrap();

@@ -217,4 +217,69 @@ mod tests {
             "output state must not contain legacy name field"
         );
     }
+
+    use crate::test_utils::{focused_window, output_with, unfocused_window, workspace_with};
+
+    // --- WorkspaceState::contains_focused_window ---
+
+    #[test]
+    fn workspace_no_windows_is_not_focused() {
+        assert!(!workspace_with(vec![]).contains_focused_window());
+    }
+
+    #[test]
+    fn workspace_only_unfocused_windows_is_not_focused() {
+        assert!(!workspace_with(vec![unfocused_window(), unfocused_window()]).contains_focused_window());
+    }
+
+    #[test]
+    fn workspace_with_focused_window_is_focused() {
+        assert!(workspace_with(vec![unfocused_window(), focused_window()]).contains_focused_window());
+    }
+
+    // --- OutputState::contains_focused_window ---
+
+    #[test]
+    fn output_no_workspaces_is_not_focused() {
+        assert!(!output_with(vec![]).contains_focused_window());
+    }
+
+    #[test]
+    fn output_delegates_to_workspace_focus() {
+        let unfocused = workspace_with(vec![unfocused_window()]);
+        let focused   = workspace_with(vec![focused_window()]);
+        assert!(!output_with(vec![unfocused.clone()]).contains_focused_window());
+        assert!( output_with(vec![unfocused, focused]).contains_focused_window());
+    }
+
+    // --- AppState::focused_output ---
+
+    #[test]
+    fn focused_output_empty_desktop_returns_none() {
+        assert!(AppState::default().focused_output().is_none());
+    }
+
+    #[test]
+    fn focused_output_no_focused_window_returns_none() {
+        let mut state = AppState::default();
+        state.desktop.outputs.insert(
+            "HDMI-1".to_string(),
+            output_with(vec![workspace_with(vec![unfocused_window()])]),
+        );
+        assert!(state.focused_output().is_none());
+    }
+
+    #[test]
+    fn focused_output_returns_output_containing_focused_window() {
+        let mut state = AppState::default();
+        state.desktop.outputs.insert(
+            "DP-1".to_string(),
+            output_with(vec![workspace_with(vec![unfocused_window()])]),
+        );
+        state.desktop.outputs.insert(
+            "HDMI-1".to_string(),
+            output_with(vec![workspace_with(vec![focused_window()])]),
+        );
+        assert_eq!(state.focused_output().as_deref(), Some("HDMI-1"));
+    }
 }

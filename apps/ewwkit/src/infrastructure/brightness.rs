@@ -106,8 +106,39 @@ fn discover_backlight() -> Option<String> {
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
 }
 
-pub fn create_brightness_provider() -> Option<impl StateProvider<BrightnessState>> {
-    discover_backlight().map(|device| SysfsBacklightProvider { device })
+/// A provider that wraps an optional backlight device.
+///
+/// On machines without a backlight (desktops, headless servers) the inner
+/// device is `None`; `init()` returns the default state and `watch()` returns
+/// a channel that never fires, keeping the shape identical to every other
+/// provider.
+pub struct BrightnessProvider {
+    inner: Option<SysfsBacklightProvider>,
+}
+
+#[async_trait]
+impl StateProvider<BrightnessState> for BrightnessProvider {
+    fn path(&self) -> &'static str {
+        "system.brightness"
+    }
+
+    async fn init(&self) -> anyhow::Result<BrightnessState> {
+        match &self.inner {
+            Some(p) => p.init().await,
+            None => Ok(BrightnessState::default()),
+        }
+    }
+
+    fn watch(&self) -> mpsc::Receiver<BrightnessState> {
+        match &self.inner {
+            Some(p) => p.watch(),
+            None => mpsc::channel(1).1,
+        }
+    }
+}
+
+pub fn create_brightness_provider() -> BrightnessProvider {
+    BrightnessProvider { inner: discover_backlight().map(|device| SysfsBacklightProvider { device }) }
 }
 
 #[cfg(test)]
@@ -155,18 +186,12 @@ mod tests {
     }
 
     // ── read_brightness_from ──────────────────────────────────────────────────
-
-    fn make_sysfs(dir: &std::path::Path, device: &str, brightness: &str, max: &str) {
-        let dev = dir.join(device);
-        std::fs::create_dir_all(&dev).unwrap();
-        std::fs::write(dev.join("brightness"), brightness).unwrap();
-        std::fs::write(dev.join("max_brightness"), max).unwrap();
-    }
+    use crate::test_utils::{make_sysfs_files as make_sysfs};
 
     #[tokio::test]
     async fn sysfs_calculates_percentage() {
         let tmp = tempfile::tempdir().unwrap();
-        make_sysfs(tmp.path(), "intel_backlight", "750\n", "1000\n");
+        make_sysfs(tmp.path(), "intel_backlight", &[("brightness", "750\n"), ("max_brightness", "1000\n")]);
         let state = read_brightness_from("intel_backlight", tmp.path().to_str().unwrap())
             .await
             .unwrap();
@@ -177,7 +202,7 @@ mod tests {
     #[tokio::test]
     async fn sysfs_full_brightness() {
         let tmp = tempfile::tempdir().unwrap();
-        make_sysfs(tmp.path(), "intel_backlight", "1000\n", "1000\n");
+        make_sysfs(tmp.path(), "intel_backlight", &[("brightness", "1000\n"), ("max_brightness", "1000\n")]);
         let state = read_brightness_from("intel_backlight", tmp.path().to_str().unwrap())
             .await
             .unwrap();
@@ -187,7 +212,7 @@ mod tests {
     #[tokio::test]
     async fn sysfs_no_trailing_newline() {
         let tmp = tempfile::tempdir().unwrap();
-        make_sysfs(tmp.path(), "bl", "500", "1000");
+        make_sysfs(tmp.path(), "bl", &[("brightness", "500"), ("max_brightness", "1000")]);
         let state = read_brightness_from("bl", tmp.path().to_str().unwrap())
             .await
             .unwrap();
@@ -197,7 +222,7 @@ mod tests {
     #[tokio::test]
     async fn sysfs_non_numeric_defaults_to_zero() {
         let tmp = tempfile::tempdir().unwrap();
-        make_sysfs(tmp.path(), "bl", "N/A\n", "1000\n");
+        make_sysfs(tmp.path(), "bl", &[("brightness", "N/A\n"), ("max_brightness", "1000\n")]);
         let state = read_brightness_from("bl", tmp.path().to_str().unwrap())
             .await
             .unwrap();
@@ -215,7 +240,7 @@ mod tests {
     async fn sysfs_caps_at_100() {
         let tmp = tempfile::tempdir().unwrap();
         // raw > max would be unusual but should not panic or overflow
-        make_sysfs(tmp.path(), "bl", "1200\n", "1000\n");
+        make_sysfs(tmp.path(), "bl", &[("brightness", "1200\n"), ("max_brightness", "1000\n")]);
         let state = read_brightness_from("bl", tmp.path().to_str().unwrap())
             .await
             .unwrap();

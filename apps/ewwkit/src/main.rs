@@ -5,6 +5,8 @@ mod domain;
 mod infrastructure;
 mod popup;
 mod state;
+#[cfg(test)]
+mod test_utils;
 
 use crate::application::handle_event;
 use crate::cli::{Cli, Commands};
@@ -44,37 +46,29 @@ async fn run_daemon(config: AppConfig) -> anyhow::Result<()> {
     let mut last_emitted_state = AppState::default();
     let mut popup_manager = PopupManager::new();
 
-    let battery_provider = battery::create_battery_provider();
+    let battery_provider    = battery::create_battery_provider();
+    let audio_monitor       = audio::create_monitor();
+    let wifi_provider       = wifi::create_wifi_provider();
+    let brightness_provider = brightness::create_brightness_provider();
+
     eprintln!("ewwkit [{}]: initializing", battery_provider.path());
-    if let Ok(bat) = battery_provider.init().await {
-        state.system.battery = bat;
-    }
-
-    let audio_monitor = audio::create_monitor();
     eprintln!("ewwkit [{}]: initializing", audio_monitor.path());
-    if let Ok(audio) = audio_monitor.init().await {
-        state.system.audio = audio;
-    }
-
-    let wifi_provider = wifi::create_wifi_provider();
     eprintln!("ewwkit [{}]: initializing", wifi_provider.path());
-    if let Ok(net) = wifi_provider.init().await {
-        state.system.network = net;
-    }
+    eprintln!("ewwkit [{}]: initializing", brightness_provider.path());
 
-    let brightness_rx = match brightness::create_brightness_provider() {
-        Some(provider) => {
-            eprintln!("ewwkit [{}]: initializing", provider.path());
-            if let Ok(b) = provider.init().await {
-                state.system.brightness = b;
-            }
-            provider.watch()
-        }
-        None => {
-            eprintln!("ewwkit [system.brightness]: no backlight device found, skipping");
-            tokio::sync::mpsc::channel(1).1
-        }
-    };
+    let (bat, audio, net, brightness) = tokio::join!(
+        battery_provider.init(),
+        audio_monitor.init(),
+        wifi_provider.init(),
+        brightness_provider.init(),
+    );
+
+    if let Ok(b) = bat        { state.system.battery    = b; }
+    if let Ok(a) = audio      { state.system.audio      = a; }
+    if let Ok(n) = net        { state.system.network    = n; }
+    if let Ok(b) = brightness { state.system.brightness = b; }
+
+    let brightness_rx = brightness_provider.watch();
 
     let niri_socket_path = config.niri.socket_path.clone().unwrap_or_else(|| {
         std::env::var("NIRI_SOCKET").unwrap_or_else(|_| {
