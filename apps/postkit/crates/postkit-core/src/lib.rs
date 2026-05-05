@@ -54,6 +54,9 @@ pub struct MediaRef {
     pub path: PathBuf,
     #[serde(default)]
     pub alt: Option<String>,
+    /// Public URL for platforms that require URL-based media uploads (e.g. Instagram).
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 // ─── Output de compose(): plan declarativo ──────────────────────────────────

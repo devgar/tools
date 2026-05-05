@@ -12,6 +12,7 @@ path = "src/main.rs"
 postkit-core = { path = "../postkit-core" }
 postkit-providers-bluesky = { path = "../postkit-providers-bluesky" }
 postkit-providers-x = { path = "../postkit-providers-x" }
+postkit-providers-meta = { path = "../postkit-providers-meta" }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

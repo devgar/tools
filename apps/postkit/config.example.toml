@@ -16,6 +16,20 @@ app_password = "xxxx-xxxx-xxxx-xxxx"
 # handle = "proyecto.bsky.social"
 # app_password = "yyyy-yyyy-yyyy-yyyy"
 
+# Facebook Page
+# [accounts.mipage]
+# provider = "facebook_page"
+# page_id = "123456789012345"
+# page_access_token = "EAA..."
+
+# Instagram Business/Creator (conectada a una Facebook Page)
+# [accounts.miig]
+# provider = "instagram"
+# ig_user_id = "123456789012345"
+# access_token = "EAA..."
+#
+# NOTA: Instagram requiere URL pública en el campo `url` de cada imagen del post.
+
 # Conexión al daemon para el subcomando `postkit schedule`.
 # Si se omite daemon_url, se usa http://localhost:8080.
 # daemon_url     = "http://localhost:8080"

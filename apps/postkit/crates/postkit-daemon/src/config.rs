@@ -41,6 +41,14 @@ pub enum AccountConfig {
         access_token: String,
         access_token_secret: String,
     },
+    FacebookPage {
+        page_id: String,
+        page_access_token: String,
+    },
+    Instagram {
+        ig_user_id: String,
+        access_token: String,
+    },
 }
 
 #[derive(Deserialize)]

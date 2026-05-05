@@ -345,7 +345,7 @@ mod tests {
     #[test]
     fn compose_rejects_more_than_4_images() {
         let media = (0..5)
-            .map(|i| MediaRef { path: PathBuf::from(format!("img{i}.png")), alt: None })
+            .map(|i| MediaRef { path: PathBuf::from(format!("img{i}.png")), alt: None, url: None })
             .collect();
         let source = SourcePost { text: "test".into(), media, hashtags: vec![] };
         assert!(provider().compose(&source).is_err());
@@ -355,7 +355,7 @@ mod tests {
     fn compose_warns_on_missing_alt() {
         let source = SourcePost {
             text: "test".into(),
-            media: vec![MediaRef { path: PathBuf::from("img.png"), alt: None }],
+            media: vec![MediaRef { path: PathBuf::from("img.png"), alt: None, url: None }],
             hashtags: vec![],
         };
         let result = provider().compose(&source).unwrap();
@@ -366,7 +366,7 @@ mod tests {
     fn compose_no_warning_with_alt() {
         let source = SourcePost {
             text: "test".into(),
-            media: vec![MediaRef { path: PathBuf::from("img.png"), alt: Some("desc".into()) }],
+            media: vec![MediaRef { path: PathBuf::from("img.png"), alt: Some("desc".into()), url: None }],
             hashtags: vec![],
         };
         let result = provider().compose(&source).unwrap();
@@ -420,8 +420,8 @@ mod tests {
         let source = SourcePost {
             text: "test".into(),
             media: vec![
-                MediaRef { path: PathBuf::from("a.png"), alt: Some("A".into()) },
-                MediaRef { path: PathBuf::from("b.png"), alt: Some("B".into()) },
+                MediaRef { path: PathBuf::from("a.png"), alt: Some("A".into()), url: None },
+                MediaRef { path: PathBuf::from("b.png"), alt: Some("B".into()), url: None },
             ],
             hashtags: vec![],
         };

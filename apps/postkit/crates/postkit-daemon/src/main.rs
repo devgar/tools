@@ -6,6 +6,7 @@ use anyhow::Result;
 use clap::Parser;
 use postkit_core::Provider;
 use postkit_providers_bluesky::Bluesky;
+use postkit_providers_meta::{FacebookPage, Instagram};
 use postkit_providers_x::X;
 use postkit_store::Store;
 use routes::AppState;
@@ -108,6 +109,12 @@ fn build_providers(accounts: HashMap<String, AccountConfig>) -> HashMap<String, 
                     id.clone(),
                     Arc::new(X::new(id, api_key, api_secret, access_token, access_token_secret)),
                 );
+            }
+            AccountConfig::FacebookPage { page_id, page_access_token } => {
+                out.insert(id.clone(), Arc::new(FacebookPage::new(id, page_id, page_access_token)));
+            }
+            AccountConfig::Instagram { ig_user_id, access_token } => {
+                out.insert(id.clone(), Arc::new(Instagram::new(id, ig_user_id, access_token)));
             }
         }
     }

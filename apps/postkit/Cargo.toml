@@ -3,6 +3,7 @@ members = [
     "crates/postkit-core",
     "crates/postkit-providers-bluesky",
     "crates/postkit-providers-x",
+    "crates/postkit-providers-meta",
     "crates/postkit-store",
     "crates/postkit-daemon",
     "crates/postkit",

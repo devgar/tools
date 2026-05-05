@@ -6,8 +6,9 @@ use std::path::Path;
 pub struct Config {
     #[serde(default)]
     pub accounts: HashMap<String, AccountConfig>,
-    /// URL base del daemon para el subcomando `schedule`.
+    /// Base URL of the daemon for the `schedule` subcommand. Default: http://localhost:8080.
     pub daemon_url: Option<String>,
+    /// API key of the daemon (X-Api-Key). Default: config daemon_api_key.
     pub daemon_api_key: Option<String>,
 }
 
@@ -23,6 +24,14 @@ pub enum AccountConfig {
         api_secret: String,
         access_token: String,
         access_token_secret: String,
+    },
+    FacebookPage {
+        page_id: String,
+        page_access_token: String,
+    },
+    Instagram {
+        ig_user_id: String,
+        access_token: String,
     },
 }
 

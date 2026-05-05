@@ -5,6 +5,7 @@ use reqwest;
 use clap::{Parser, Subcommand};
 use postkit_core::{Provider, SourcePost};
 use postkit_providers_bluesky::Bluesky;
+use postkit_providers_meta::{FacebookPage, Instagram};
 use postkit_providers_x::X;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -101,6 +102,12 @@ fn build_providers(cfg: &Config) -> HashMap<String, Arc<dyn Provider>> {
                         access_token_secret.clone(),
                     )),
                 );
+            }
+            AccountConfig::FacebookPage { page_id, page_access_token } => {
+                out.insert(id.clone(), Arc::new(FacebookPage::new(id.clone(), page_id.clone(), page_access_token.clone())));
+            }
+            AccountConfig::Instagram { ig_user_id, access_token } => {
+                out.insert(id.clone(), Arc::new(Instagram::new(id.clone(), ig_user_id.clone(), access_token.clone())));
             }
         }
     }
