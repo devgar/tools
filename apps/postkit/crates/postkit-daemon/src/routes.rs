@@ -72,7 +72,7 @@ async fn health() -> Json<Health> {
 pub struct ScheduleBody {
     pub account_id: String,
     pub source_post: postkit_core::SourcePost,
-    pub scheduled_at: DateTime<Utc>,
+    pub scheduled_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Serialize)]
@@ -93,11 +93,11 @@ async fn schedule_post(
     let source_json = serde_json::to_string(&body.source_post)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let id = state
-        .store
-        .schedule(&body.account_id, &provider_str, &source_json, body.scheduled_at)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let id = match body.scheduled_at {
+        Some(at) => state.store.schedule(&body.account_id, &provider_str, &source_json, at).await,
+        None => state.store.create_draft(&body.account_id, &provider_str, &source_json).await,
+    }
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(IdResponse { id }))
 }
@@ -446,5 +446,64 @@ mod tests {
         let bytes = to_bytes(resp.into_body(), 1024).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["id"], 1);
+    }
+
+    #[tokio::test]
+    async fn schedule_without_date_creates_draft() {
+        let body = serde_json::json!({
+            "account_id": "test",
+            "source_post": {"text": "draft", "media": [], "hashtags": []}
+        });
+        let state = mem_state_with_provider().await;
+        let resp = router(state.clone())
+            .oneshot(
+                Request::post("/schedule")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), 1024).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let id: i64 = json["id"].as_i64().unwrap();
+        let post = state.store.get_by_id(id).await.unwrap().unwrap();
+        assert_eq!(post.status, "draft");
+    }
+
+    #[tokio::test]
+    async fn update_draft_with_date_promotes_to_pending() {
+        let state = mem_state_with_provider().await;
+        // create draft
+        let draft_body = serde_json::json!({
+            "account_id": "test",
+            "source_post": {"text": "draft", "media": [], "hashtags": []}
+        });
+        router(state.clone())
+            .oneshot(
+                Request::post("/schedule")
+                    .header("content-type", "application/json")
+                    .body(Body::from(draft_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // promote via PUT
+        let update_body = serde_json::json!({"scheduled_at": "2026-06-01T10:00:00Z"});
+        let resp = router(state.clone())
+            .oneshot(
+                Request::put("/scheduled/1")
+                    .header("content-type", "application/json")
+                    .body(Body::from(update_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        let post = state.store.get_by_id(1).await.unwrap().unwrap();
+        assert_eq!(post.status, "pending");
     }
 }

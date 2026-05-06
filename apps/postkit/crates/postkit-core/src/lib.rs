@@ -9,6 +9,7 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -20,6 +21,19 @@ pub enum ProviderKind {
     MetaInstagram,
     YouTube,
     TikTok,
+}
+
+impl ProviderKind {
+    pub fn config_key(&self) -> &'static str {
+        match self {
+            ProviderKind::Bluesky => "bluesky",
+            ProviderKind::X => "x",
+            ProviderKind::MetaPage => "meta_page",
+            ProviderKind::MetaInstagram => "meta_instagram",
+            ProviderKind::YouTube => "youtube",
+            ProviderKind::TikTok => "tiktok",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -40,13 +54,36 @@ pub struct AccountInfo {
 
 // ─── Input: post lógico, agnóstico de plataforma ─────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SourcePostOverride {
+    pub text: Option<String>,
+    pub media: Option<Vec<MediaRef>>,
+    pub hashtags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SourcePost {
     pub text: String,
     #[serde(default)]
     pub media: Vec<MediaRef>,
     #[serde(default)]
     pub hashtags: Vec<String>,
+    /// Overrides por plataforma. Clave = ProviderKind::config_key().
+    #[serde(default)]
+    pub platforms: HashMap<String, SourcePostOverride>,
+}
+
+impl SourcePost {
+    /// Devuelve una copia del post con los overrides de la plataforma aplicados.
+    pub fn resolve(&self, kind: ProviderKind) -> SourcePost {
+        let ov = self.platforms.get(kind.config_key());
+        SourcePost {
+            text: ov.and_then(|o| o.text.clone()).unwrap_or_else(|| self.text.clone()),
+            media: ov.and_then(|o| o.media.clone()).unwrap_or_else(|| self.media.clone()),
+            hashtags: ov.and_then(|o| o.hashtags.clone()).unwrap_or_else(|| self.hashtags.clone()),
+            platforms: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +133,49 @@ pub struct PublishResult {
     pub post_url: Option<String>,
     pub platform_id: String,
     pub raw: serde_json::Value,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_returns_base_when_no_override() {
+        let post = SourcePost {
+            text: "hello".into(),
+            hashtags: vec!["rust".into()],
+            ..Default::default()
+        };
+        let resolved = post.resolve(ProviderKind::Bluesky);
+        assert_eq!(resolved.text, "hello");
+        assert_eq!(resolved.hashtags, vec!["rust"]);
+        assert!(resolved.platforms.is_empty());
+    }
+
+    #[test]
+    fn resolve_applies_text_override() {
+        let mut platforms = HashMap::new();
+        platforms.insert(
+            "x".into(),
+            SourcePostOverride { text: Some("short for X".into()), media: None, hashtags: None },
+        );
+        let post = SourcePost { text: "long default text".into(), platforms, ..Default::default() };
+        let resolved = post.resolve(ProviderKind::X);
+        assert_eq!(resolved.text, "short for X");
+        assert!(resolved.platforms.is_empty());
+    }
+
+    #[test]
+    fn resolve_keeps_base_text_for_other_platforms() {
+        let mut platforms = HashMap::new();
+        platforms.insert(
+            "x".into(),
+            SourcePostOverride { text: Some("short for X".into()), media: None, hashtags: None },
+        );
+        let post = SourcePost { text: "default text".into(), platforms, ..Default::default() };
+        let resolved = post.resolve(ProviderKind::Bluesky);
+        assert_eq!(resolved.text, "default text");
+    }
 }
 
 // ─── El trait principal ──────────────────────────────────────────────────────

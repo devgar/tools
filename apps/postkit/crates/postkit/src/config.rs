@@ -5,12 +5,28 @@ use std::path::Path;
 #[derive(Debug, Deserialize)]
 pub struct Config {
     #[serde(default)]
+    pub apps: HashMap<String, AppConfig>,
+    #[serde(default)]
     pub accounts: HashMap<String, AccountConfig>,
     /// Base URL of the daemon for the `schedule` subcommand. Default: http://localhost:8080.
     pub daemon_url: Option<String>,
-    /// API key of the daemon (X-Api-Key). Default: config daemon_api_key.
+    /// API key of the daemon (X-Api-Key).
     pub daemon_api_key: Option<String>,
 }
+
+// ─── App credentials ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "provider", rename_all = "snake_case")]
+pub enum AppConfig {
+    X {
+        api_key: String,
+        api_secret: String,
+    },
+    Meta,
+}
+
+// ─── Account credentials ──────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "provider", rename_all = "snake_case")]
@@ -20,16 +36,19 @@ pub enum AccountConfig {
         app_password: String,
     },
     X {
-        api_key: String,
-        api_secret: String,
+        app: String,
         access_token: String,
         access_token_secret: String,
     },
     FacebookPage {
+        #[allow(dead_code)]
+        app: String,
         page_id: String,
         page_access_token: String,
     },
     Instagram {
+        #[allow(dead_code)]
+        app: String,
         ig_user_id: String,
         access_token: String,
     },

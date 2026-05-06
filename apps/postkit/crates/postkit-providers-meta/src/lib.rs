@@ -12,7 +12,6 @@ use postkit_core::{
     Step,
 };
 use reqwest::Client;
-use serde::Deserialize;
 use serde_json::{json, Value};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -73,9 +72,7 @@ impl Provider for FacebookPage {
     }
 
     async fn verify(&self) -> anyhow::Result<AccountInfo> {
-        #[derive(Deserialize)]
-        struct PageInfo { name: String, username: Option<String> }
-        let res: PageInfo = self
+        let body: serde_json::Value = self
             .http
             .get(format!("{GRAPH}/{}", self.page_id))
             .query(&[("fields", "name,username"), ("access_token", &self.page_access_token)])
@@ -84,11 +81,19 @@ impl Provider for FacebookPage {
             .error_for_status()?
             .json()
             .await?;
+        if let Some(err) = body.get("error") {
+            anyhow::bail!("Meta API error: {}", err);
+        }
+        let name = body["name"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("respuesta inesperada: {body}"))?
+            .to_string();
+        let handle = body["username"].as_str().unwrap_or(&self.page_id).to_string();
         Ok(AccountInfo {
             id: self.account_id.clone(),
             provider: ProviderKind::MetaPage,
-            handle: res.username.unwrap_or_else(|| self.page_id.clone()),
-            display_name: Some(res.name),
+            handle,
+            display_name: Some(name),
         })
     }
 
@@ -262,22 +267,28 @@ impl Provider for Instagram {
     }
 
     async fn verify(&self) -> anyhow::Result<AccountInfo> {
-        #[derive(Deserialize)]
-        struct IgInfo { name: String, username: String }
-        let res: IgInfo = self
+        let body: serde_json::Value = self
             .http
             .get(format!("{GRAPH}/{}", self.ig_user_id))
             .query(&[("fields", "name,username"), ("access_token", &self.access_token)])
             .send()
             .await?
-            .error_for_status()?
             .json()
             .await?;
+        if let Some(err) = body.get("error") {
+            anyhow::bail!("Meta API error: {}", err);
+        }
+        let username = body["username"]
+            .as_str()
+            .or_else(|| body["name"].as_str())
+            .ok_or_else(|| anyhow::anyhow!("respuesta inesperada: {body}"))?
+            .to_string();
+        let display_name = body["name"].as_str().map(str::to_string);
         Ok(AccountInfo {
             id: self.account_id.clone(),
             provider: ProviderKind::MetaInstagram,
-            handle: res.username,
-            display_name: Some(res.name),
+            handle: username,
+            display_name,
         })
     }
 
@@ -386,7 +397,7 @@ mod tests {
     }
 
     fn src(text: &str) -> SourcePost {
-        SourcePost { text: text.into(), media: vec![], hashtags: vec![] }
+        SourcePost { text: text.into(), media: vec![], hashtags: vec![], platforms: Default::default() }
     }
 
     fn media_with_url(url: &str) -> MediaRef {
@@ -414,7 +425,7 @@ mod tests {
 
     #[test]
     fn fb_compose_appends_hashtags() {
-        let post = SourcePost { text: "Hi".into(), hashtags: vec!["rust".into()], media: vec![] };
+        let post = SourcePost { text: "Hi".into(), hashtags: vec!["rust".into()], media: vec![], platforms: Default::default() };
         let result = fb().compose(&post).unwrap();
         let Step::CreatePost { text, .. } = &result.steps[0] else { panic!() };
         assert_eq!(text, "Hi\n\n#rust");
@@ -441,7 +452,7 @@ mod tests {
         let media = (0..=FB_MAX_IMAGES)
             .map(|i| MediaRef { path: PathBuf::from(format!("img{i}.png")), alt: None, url: None })
             .collect();
-        let post = SourcePost { text: "test".into(), media, hashtags: vec![] };
+        let post = SourcePost { text: "test".into(), media, hashtags: vec![], platforms: Default::default() };
         assert!(fb().compose(&post).is_err());
     }
 
@@ -451,6 +462,7 @@ mod tests {
             text: "test".into(),
             media: vec![MediaRef { path: PathBuf::from("img.png"), alt: None, url: None }],
             hashtags: vec![],
+            platforms: Default::default(),
         };
         assert!(!fb().compose(&post).unwrap().warnings.is_empty());
     }
@@ -461,6 +473,7 @@ mod tests {
             text: "test".into(),
             media: vec![MediaRef { path: PathBuf::from("img.png"), alt: Some("desc".into()), url: None }],
             hashtags: vec![],
+            platforms: Default::default(),
         };
         assert!(fb().compose(&post).unwrap().warnings.is_empty());
     }
@@ -474,6 +487,7 @@ mod tests {
                 MediaRef { path: PathBuf::from("b.png"), alt: Some("B".into()), url: None },
             ],
             hashtags: vec![],
+            platforms: Default::default(),
         };
         let result = fb().compose(&post).unwrap();
         assert_eq!(result.steps.len(), 3);
@@ -494,6 +508,7 @@ mod tests {
                 url: Some("https://example.com/img.jpg".into()),
             }],
             hashtags: vec![],
+            platforms: Default::default(),
         };
         let result = ig().compose(&post).unwrap();
         assert!(result.warnings.is_empty());
@@ -510,6 +525,7 @@ mod tests {
             text: "Hi".into(),
             hashtags: vec!["rust".into()],
             media: vec![media_with_url("https://example.com/img.jpg")],
+            platforms: Default::default(),
         };
         let result = ig().compose(&post).unwrap();
         let Step::CreatePost { text, .. } = &result.steps[0] else { panic!() };
@@ -522,6 +538,7 @@ mod tests {
             text: "a".repeat(IG_MAX_GRAPHEMES),
             media: vec![media_with_url("https://example.com/img.jpg")],
             hashtags: vec![],
+            platforms: Default::default(),
         };
         assert!(ig().compose(&post).is_ok());
     }
@@ -532,6 +549,7 @@ mod tests {
             text: "a".repeat(IG_MAX_GRAPHEMES + 1),
             media: vec![media_with_url("https://example.com/img.jpg")],
             hashtags: vec![],
+            platforms: Default::default(),
         };
         assert!(ig().compose(&post).is_err());
     }
@@ -543,6 +561,7 @@ mod tests {
             text,
             media: vec![media_with_url("https://example.com/img.jpg")],
             hashtags: vec![],
+            platforms: Default::default(),
         };
         assert!(ig().compose(&post).is_ok());
     }
@@ -561,7 +580,7 @@ mod tests {
                 url: Some(format!("https://example.com/img{i}.png")),
             })
             .collect();
-        let post = SourcePost { text: "test".into(), media, hashtags: vec![] };
+        let post = SourcePost { text: "test".into(), media, hashtags: vec![], platforms: Default::default() };
         assert!(ig().compose(&post).is_err());
     }
 
@@ -571,6 +590,7 @@ mod tests {
             text: "test".into(),
             media: vec![media_without_url()],
             hashtags: vec![],
+            platforms: Default::default(),
         };
         assert!(ig().compose(&post).is_err());
     }
@@ -581,6 +601,7 @@ mod tests {
             text: "test".into(),
             media: vec![media_with_url("https://example.com/img.jpg")],
             hashtags: vec![],
+            platforms: Default::default(),
         };
         assert!(!ig().compose(&post).unwrap().warnings.is_empty());
     }
@@ -595,6 +616,7 @@ mod tests {
                 url: Some("https://example.com/img.jpg".into()),
             }],
             hashtags: vec![],
+            platforms: Default::default(),
         };
         assert!(ig().compose(&post).unwrap().warnings.is_empty());
     }
@@ -608,6 +630,7 @@ mod tests {
                 media_with_url("https://example.com/b.jpg"),
             ],
             hashtags: vec![],
+            platforms: Default::default(),
         };
         let result = ig().compose(&post).unwrap();
         let Step::CreatePost { media_refs, facets, .. } = &result.steps[0] else { panic!() };

@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::config::{AccountConfig, Config};
+use crate::config::{AccountConfig, AppConfig, Config};
 
 #[derive(Parser)]
 #[command(name = "postkit", about = "Multi-platform social media scheduler")]
@@ -65,6 +65,21 @@ enum Cmd {
         #[arg(long)]
         api_key: Option<String>,
     },
+
+    /// Save a post as draft via the daemon (no date set, editable before scheduling).
+    Draft {
+        /// TOML with the SourcePost.
+        post: PathBuf,
+        /// Target accounts. If omitted, all.
+        #[arg(long, num_args = 0..)]
+        targets: Vec<String>,
+        /// Base URL of the daemon. Default: config daemon_url or http://localhost:8080.
+        #[arg(long)]
+        daemon: Option<String>,
+        /// API key of the daemon (X-Api-Key). Default: config daemon_api_key.
+        #[arg(long)]
+        api_key: Option<String>,
+    },
 }
 
 fn expand_tilde(s: &str) -> PathBuf {
@@ -76,7 +91,7 @@ fn expand_tilde(s: &str) -> PathBuf {
     PathBuf::from(s)
 }
 
-fn build_providers(cfg: &Config) -> HashMap<String, Arc<dyn Provider>> {
+fn build_providers(cfg: &Config) -> Result<HashMap<String, Arc<dyn Provider>>> {
     let mut out: HashMap<String, Arc<dyn Provider>> = HashMap::new();
     for (id, acc) in &cfg.accounts {
         match acc {
@@ -86,12 +101,13 @@ fn build_providers(cfg: &Config) -> HashMap<String, Arc<dyn Provider>> {
                     Arc::new(Bluesky::new(id.clone(), handle.clone(), app_password.clone())),
                 );
             }
-            AccountConfig::X {
-                api_key,
-                api_secret,
-                access_token,
-                access_token_secret,
-            } => {
+            AccountConfig::X { app, access_token, access_token_secret } => {
+                let AppConfig::X { api_key, api_secret } = cfg
+                    .apps
+                    .get(app)
+                    .ok_or_else(|| anyhow::anyhow!("app '{app}' no encontrada"))? else {
+                    anyhow::bail!("app '{app}' no es de tipo x");
+                };
                 out.insert(
                     id.clone(),
                     Arc::new(X::new(
@@ -103,15 +119,21 @@ fn build_providers(cfg: &Config) -> HashMap<String, Arc<dyn Provider>> {
                     )),
                 );
             }
-            AccountConfig::FacebookPage { page_id, page_access_token } => {
-                out.insert(id.clone(), Arc::new(FacebookPage::new(id.clone(), page_id.clone(), page_access_token.clone())));
+            AccountConfig::FacebookPage { app: _, page_id, page_access_token } => {
+                out.insert(
+                    id.clone(),
+                    Arc::new(FacebookPage::new(id.clone(), page_id.clone(), page_access_token.clone())),
+                );
             }
-            AccountConfig::Instagram { ig_user_id, access_token } => {
-                out.insert(id.clone(), Arc::new(Instagram::new(id.clone(), ig_user_id.clone(), access_token.clone())));
+            AccountConfig::Instagram { app: _, ig_user_id, access_token } => {
+                out.insert(
+                    id.clone(),
+                    Arc::new(Instagram::new(id.clone(), ig_user_id.clone(), access_token.clone())),
+                );
             }
         }
     }
-    out
+    Ok(out)
 }
 
 fn resolve_targets(
@@ -135,7 +157,7 @@ async fn main() -> Result<()> {
     let config_path = expand_tilde(&cli.config);
     let cfg = Config::load(&config_path)
         .with_context(|| format!("loading config from {}", config_path.display()))?;
-    let providers = build_providers(&cfg);
+    let providers = build_providers(&cfg)?;
 
     if providers.is_empty() {
         eprintln!("⚠ no accounts configured in {}", config_path.display());
@@ -170,7 +192,8 @@ async fn main() -> Result<()> {
             let mut plans = Vec::new();
             for id in ids {
                 let p = providers.get(&id).unwrap();
-                plans.push(p.compose(&source)?);
+                let resolved = source.resolve(p.kind());
+                plans.push(p.compose(&resolved)?);
             }
             println!("{}", serde_json::to_string_pretty(&plans)?);
         }
@@ -215,12 +238,47 @@ async fn main() -> Result<()> {
             }
         }
 
+        Cmd::Draft { post, targets, daemon, api_key } => {
+            let source = load_post(&post)?;
+            let ids = resolve_targets(&providers, &targets)?;
+
+            let daemon_url = daemon
+                .or_else(|| cfg.daemon_url.clone())
+                .unwrap_or_else(|| "http://localhost:8080".to_string());
+            let api_key = api_key.or_else(|| cfg.daemon_api_key.clone());
+
+            let client = reqwest::Client::new();
+            for id in ids {
+                let body = serde_json::json!({
+                    "account_id": id,
+                    "source_post": source,
+                });
+                let mut req = client.post(format!("{daemon_url}/schedule")).json(&body);
+                if let Some(ref key) = api_key {
+                    req = req.header("X-Api-Key", key);
+                }
+                let resp = req
+                    .send()
+                    .await
+                    .with_context(|| format!("contacting daemon at {daemon_url}"))?;
+                let status = resp.status();
+                if status.is_success() {
+                    let json: serde_json::Value = resp.json().await?;
+                    println!("✓ {id} → draft id={}", json["id"]);
+                } else {
+                    let text = resp.text().await.unwrap_or_default();
+                    eprintln!("✗ {id} → HTTP {status}: {text}");
+                }
+            }
+        }
+
         Cmd::Publish { post, targets } => {
             let source = load_post(&post)?;
             let ids = resolve_targets(&providers, &targets)?;
             for id in ids {
                 let p = providers.get(&id).unwrap();
-                let prepared = p.compose(&source)?;
+                let resolved = source.resolve(p.kind());
+                let prepared = p.compose(&resolved)?;
                 for w in &prepared.warnings {
                     eprintln!("⚠ [{id}] {w}");
                 }

@@ -63,7 +63,8 @@ async fn publish(
         .get(&post.account_id)
         .ok_or_else(|| anyhow::anyhow!("cuenta desconocida: {}", post.account_id))?;
     let source: postkit_core::SourcePost = serde_json::from_str(&post.source_post)?;
-    let prepared = provider.compose(&source)?;
+    let resolved = source.resolve(provider.kind());
+    let prepared = provider.compose(&resolved)?;
     let result = provider.execute(&prepared).await?;
     Ok(result.post_url)
 }

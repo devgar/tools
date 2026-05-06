@@ -116,6 +116,25 @@ impl Store {
         Ok(id)
     }
 
+    pub async fn create_draft(
+        &self,
+        account_id: &str,
+        provider: &str,
+        source_post: &str,
+    ) -> anyhow::Result<i64> {
+        let id = sqlx::query(
+            "INSERT INTO scheduled_posts (account_id, provider, source_post, scheduled_at, status) \
+             VALUES (?, ?, ?, 0, 'draft')",
+        )
+        .bind(account_id)
+        .bind(provider)
+        .bind(source_post)
+        .execute(&self.pool)
+        .await?
+        .last_insert_rowid();
+        Ok(id)
+    }
+
     pub async fn list(&self, f: &ListFilters) -> anyhow::Result<Vec<ScheduledPost>> {
         let mut qb = sqlx::QueryBuilder::new(
             "SELECT id, account_id, provider, source_post, scheduled_at, status, attempts, \
@@ -262,8 +281,9 @@ impl Store {
         }
         if let Some(at) = scheduled_at {
             sep.push("scheduled_at = ").push_bind_unseparated(at.timestamp());
+            sep.push("status = CASE WHEN status = 'draft' THEN 'pending' ELSE status END");
         }
-        qb.push(" WHERE id = ").push_bind(id).push(" AND status = 'pending'");
+        qb.push(" WHERE id = ").push_bind(id).push(" AND status IN ('pending', 'draft')");
         let n = qb.build().execute(&self.pool).await?.rows_affected();
         Ok(n > 0)
     }
@@ -283,10 +303,10 @@ impl Store {
         Ok(n > 0)
     }
 
-    /// Cancela un post si está en estado 'pending'. Devuelve true si se canceló.
+    /// Cancela un post si está en estado 'pending' o 'draft'. Devuelve true si se canceló.
     pub async fn cancel(&self, id: i64) -> anyhow::Result<bool> {
         let n = sqlx::query(
-            "UPDATE scheduled_posts SET status='cancelled' WHERE id=? AND status='pending'",
+            "UPDATE scheduled_posts SET status='cancelled' WHERE id=? AND status IN ('pending', 'draft')",
         )
         .bind(id)
         .execute(&self.pool)
@@ -534,5 +554,43 @@ mod tests {
         // still pending — retry should be a no-op
         assert!(!s.retry(id).await.unwrap());
         assert_eq!(s.get_by_id(id).await.unwrap().unwrap().status, "pending");
+    }
+
+    #[tokio::test]
+    async fn create_draft_creates_record() {
+        let s = mem_store().await;
+        let id = s.create_draft("a", "bluesky", SRC).await.unwrap();
+        let post = s.get_by_id(id).await.unwrap().unwrap();
+        assert_eq!(post.status, "draft");
+        assert_eq!(post.account_id, "a");
+    }
+
+    #[tokio::test]
+    async fn update_draft_promotes_to_pending_when_date_given() {
+        let s = mem_store().await;
+        let id = s.create_draft("a", "bluesky", SRC).await.unwrap();
+        let future = Utc::now() + Duration::hours(2);
+        assert!(s.update(id, None, Some(future)).await.unwrap());
+        let post = s.get_by_id(id).await.unwrap().unwrap();
+        assert_eq!(post.status, "pending");
+    }
+
+    #[tokio::test]
+    async fn update_draft_source_post_stays_draft() {
+        let s = mem_store().await;
+        let id = s.create_draft("a", "bluesky", SRC).await.unwrap();
+        assert!(s.update(id, Some(r#"{"text":"nuevo"}"#), None).await.unwrap());
+        let post = s.get_by_id(id).await.unwrap().unwrap();
+        assert_eq!(post.status, "draft");
+        assert_eq!(post.source_post, r#"{"text":"nuevo"}"#);
+    }
+
+    #[tokio::test]
+    async fn cancel_draft_returns_true() {
+        let s = mem_store().await;
+        let id = s.create_draft("a", "bluesky", SRC).await.unwrap();
+        assert!(s.cancel(id).await.unwrap());
+        let post = s.get_by_id(id).await.unwrap().unwrap();
+        assert_eq!(post.status, "cancelled");
     }
 }

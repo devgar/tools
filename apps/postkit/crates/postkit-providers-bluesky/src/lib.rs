@@ -294,7 +294,7 @@ mod tests {
     }
 
     fn src(text: &str) -> SourcePost {
-        SourcePost { text: text.into(), media: vec![], hashtags: vec![] }
+        SourcePost { text: text.into(), media: vec![], hashtags: vec![], platforms: Default::default() }
     }
 
     #[test]
@@ -316,6 +316,7 @@ mod tests {
             text: "Hello".into(),
             hashtags: vec!["rust".into(), "dev".into()],
             media: vec![],
+            platforms: Default::default(),
         };
         let result = provider().compose(&source).unwrap();
         match &result.steps[0] {
@@ -347,7 +348,7 @@ mod tests {
         let media = (0..5)
             .map(|i| MediaRef { path: PathBuf::from(format!("img{i}.png")), alt: None, url: None })
             .collect();
-        let source = SourcePost { text: "test".into(), media, hashtags: vec![] };
+        let source = SourcePost { text: "test".into(), media, hashtags: vec![], platforms: Default::default() };
         assert!(provider().compose(&source).is_err());
     }
 
@@ -357,6 +358,7 @@ mod tests {
             text: "test".into(),
             media: vec![MediaRef { path: PathBuf::from("img.png"), alt: None, url: None }],
             hashtags: vec![],
+            platforms: Default::default(),
         };
         let result = provider().compose(&source).unwrap();
         assert!(!result.warnings.is_empty());
@@ -368,6 +370,7 @@ mod tests {
             text: "test".into(),
             media: vec![MediaRef { path: PathBuf::from("img.png"), alt: Some("desc".into()), url: None }],
             hashtags: vec![],
+            platforms: Default::default(),
         };
         let result = provider().compose(&source).unwrap();
         assert!(result.warnings.is_empty());
@@ -424,6 +427,7 @@ mod tests {
                 MediaRef { path: PathBuf::from("b.png"), alt: Some("B".into()), url: None },
             ],
             hashtags: vec![],
+            platforms: Default::default(),
         };
         let result = provider().compose(&source).unwrap();
         assert_eq!(result.steps.len(), 3); // 2 uploads + 1 create

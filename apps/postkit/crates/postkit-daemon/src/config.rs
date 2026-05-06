@@ -28,6 +28,20 @@ impl DaemonConfig {
     }
 }
 
+// ─── App credentials (compartidas entre cuentas del mismo provider) ───────────
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "provider", rename_all = "snake_case")]
+pub enum AppConfig {
+    X {
+        api_key: String,
+        api_secret: String,
+    },
+    Meta,
+}
+
+// ─── Account credentials (por cuenta) ────────────────────────────────────────
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "provider", rename_all = "snake_case")]
 pub enum AccountConfig {
@@ -36,16 +50,22 @@ pub enum AccountConfig {
         app_password: String,
     },
     X {
-        api_key: String,
-        api_secret: String,
+        /// Referencia a una entrada en [apps].
+        app: String,
         access_token: String,
         access_token_secret: String,
     },
     FacebookPage {
+        /// Referencia a una entrada en [apps] (tipo meta).
+        #[allow(dead_code)]
+        app: String,
         page_id: String,
         page_access_token: String,
     },
     Instagram {
+        /// Referencia a una entrada en [apps] (tipo meta).
+        #[allow(dead_code)]
+        app: String,
         ig_user_id: String,
         access_token: String,
     },
@@ -54,11 +74,15 @@ pub enum AccountConfig {
 #[derive(Deserialize)]
 struct AccountsFile {
     #[serde(default)]
+    pub apps: HashMap<String, AppConfig>,
+    #[serde(default)]
     pub accounts: HashMap<String, AccountConfig>,
 }
 
-pub fn load_accounts(path: &str) -> anyhow::Result<HashMap<String, AccountConfig>> {
+pub fn load_accounts(
+    path: &str,
+) -> anyhow::Result<(HashMap<String, AppConfig>, HashMap<String, AccountConfig>)> {
     let text = std::fs::read_to_string(path)?;
     let f: AccountsFile = toml::from_str(&text)?;
-    Ok(f.accounts)
+    Ok((f.apps, f.accounts))
 }

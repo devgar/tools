@@ -17,7 +17,7 @@ use std::sync::Arc;
 use tokio::sync::watch;
 use tracing::info;
 
-use config::{AccountConfig, DaemonConfig};
+use config::{AccountConfig, AppConfig, DaemonConfig};
 
 #[derive(Parser)]
 #[command(name = "postkit-daemon")]
@@ -39,8 +39,8 @@ async fn main() -> Result<()> {
     let cfg = DaemonConfig::load(&cli.config)?;
 
     let store = Store::open(&cfg.db_path).await?;
-    let accounts = config::load_accounts(&cfg.accounts_config)?;
-    let providers = Arc::new(build_providers(accounts));
+    let (apps, accounts) = config::load_accounts(&cfg.accounts_config)?;
+    let providers = Arc::new(build_providers(&apps, accounts)?);
 
     let state = Arc::new(AppState {
         store: store.clone(),
@@ -94,29 +94,34 @@ async fn shutdown_signal() {
     info!("señal de cierre recibida");
 }
 
-fn build_providers(accounts: HashMap<String, AccountConfig>) -> HashMap<String, Arc<dyn Provider>> {
+fn build_providers(
+    apps: &HashMap<String, AppConfig>,
+    accounts: HashMap<String, AccountConfig>,
+) -> anyhow::Result<HashMap<String, Arc<dyn Provider>>> {
     let mut out: HashMap<String, Arc<dyn Provider>> = HashMap::new();
     for (id, acc) in accounts {
         match acc {
             AccountConfig::Bluesky { handle, app_password } => {
+                out.insert(id.clone(), Arc::new(Bluesky::new(id, handle, app_password)));
+            }
+            AccountConfig::X { app, access_token, access_token_secret } => {
+                let AppConfig::X { api_key, api_secret } = apps
+                    .get(&app)
+                    .ok_or_else(|| anyhow::anyhow!("app '{app}' no encontrada"))? else {
+                    anyhow::bail!("app '{app}' no es de tipo x");
+                };
                 out.insert(
                     id.clone(),
-                    Arc::new(Bluesky::new(id, handle, app_password)),
+                    Arc::new(X::new(id, api_key.clone(), api_secret.clone(), access_token, access_token_secret)),
                 );
             }
-            AccountConfig::X { api_key, api_secret, access_token, access_token_secret } => {
-                out.insert(
-                    id.clone(),
-                    Arc::new(X::new(id, api_key, api_secret, access_token, access_token_secret)),
-                );
-            }
-            AccountConfig::FacebookPage { page_id, page_access_token } => {
+            AccountConfig::FacebookPage { app: _, page_id, page_access_token } => {
                 out.insert(id.clone(), Arc::new(FacebookPage::new(id, page_id, page_access_token)));
             }
-            AccountConfig::Instagram { ig_user_id, access_token } => {
+            AccountConfig::Instagram { app: _, ig_user_id, access_token } => {
                 out.insert(id.clone(), Arc::new(Instagram::new(id, ig_user_id, access_token)));
             }
         }
     }
-    out
+    Ok(out)
 }
