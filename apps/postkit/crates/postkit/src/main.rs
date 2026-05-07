@@ -1,15 +1,14 @@
 mod config;
 
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
+
 use anyhow::{Context, Result};
-use reqwest;
 use clap::{Parser, Subcommand};
 use postkit_core::{Provider, SourcePost};
 use postkit_providers_bluesky::Bluesky;
 use postkit_providers_meta::{FacebookPage, Instagram};
 use postkit_providers_x::X;
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
+use reqwest;
 
 use crate::config::{AccountConfig, AppConfig, Config};
 
@@ -105,7 +104,8 @@ fn build_providers(cfg: &Config) -> Result<HashMap<String, Arc<dyn Provider>>> {
                 let AppConfig::X { api_key, api_secret } = cfg
                     .apps
                     .get(app)
-                    .ok_or_else(|| anyhow::anyhow!("app '{app}' no encontrada"))? else {
+                    .ok_or_else(|| anyhow::anyhow!("app '{app}' no encontrada"))?
+                else {
                     anyhow::bail!("app '{app}' no es de tipo x");
                 };
                 out.insert(
@@ -122,7 +122,11 @@ fn build_providers(cfg: &Config) -> Result<HashMap<String, Arc<dyn Provider>>> {
             AccountConfig::FacebookPage { app: _, page_id, page_access_token } => {
                 out.insert(
                     id.clone(),
-                    Arc::new(FacebookPage::new(id.clone(), page_id.clone(), page_access_token.clone())),
+                    Arc::new(FacebookPage::new(
+                        id.clone(),
+                        page_id.clone(),
+                        page_access_token.clone(),
+                    )),
                 );
             }
             AccountConfig::Instagram { app: _, ig_user_id, access_token } => {
@@ -139,16 +143,22 @@ fn build_providers(cfg: &Config) -> Result<HashMap<String, Arc<dyn Provider>>> {
 fn resolve_targets(
     providers: &HashMap<String, Arc<dyn Provider>>,
     targets: &[String],
-) -> Result<Vec<String>> {
+) -> Result<Vec<(String, Arc<dyn Provider>)>> {
     if targets.is_empty() {
-        return Ok(providers.keys().cloned().collect());
+        return Ok(providers
+            .iter()
+            .map(|(id, p)| (id.clone(), p.clone()))
+            .collect());
     }
-    for t in targets {
-        if !providers.contains_key(t) {
-            anyhow::bail!("unknown account: {t}");
-        }
-    }
-    Ok(targets.to_vec())
+    targets
+        .iter()
+        .map(|t| {
+            providers
+                .get(t)
+                .map(|p| (t.clone(), p.clone()))
+                .ok_or_else(|| anyhow::anyhow!("unknown account: {t}"))
+        })
+        .collect()
 }
 
 #[tokio::main]
@@ -171,14 +181,8 @@ async fn main() -> Result<()> {
         }
 
         Cmd::Verify { account } => {
-            let ids: Vec<String> = match account {
-                Some(a) => vec![a],
-                None => providers.keys().cloned().collect(),
-            };
-            for id in ids {
-                let p = providers
-                    .get(&id)
-                    .ok_or_else(|| anyhow::anyhow!("unknown account: {id}"))?;
+            let targets: Vec<String> = account.into_iter().collect();
+            for (id, p) in resolve_targets(&providers, &targets)? {
                 match p.verify().await {
                     Ok(info) => println!("✓ {id} → @{}", info.handle),
                     Err(e) => println!("✗ {id} → {e}"),
@@ -188,10 +192,8 @@ async fn main() -> Result<()> {
 
         Cmd::Compose { post, targets } => {
             let source = load_post(&post)?;
-            let ids = resolve_targets(&providers, &targets)?;
             let mut plans = Vec::new();
-            for id in ids {
-                let p = providers.get(&id).unwrap();
+            for (_id, p) in resolve_targets(&providers, &targets)? {
                 let resolved = source.resolve(p.kind());
                 plans.push(p.compose(&resolved)?);
             }
@@ -200,8 +202,6 @@ async fn main() -> Result<()> {
 
         Cmd::Schedule { post, targets, at, daemon, api_key } => {
             let source = load_post(&post)?;
-            let ids = resolve_targets(&providers, &targets)?;
-
             let daemon_url = daemon
                 .or_else(|| cfg.daemon_url.clone())
                 .unwrap_or_else(|| "http://localhost:8080".to_string());
@@ -213,7 +213,7 @@ async fn main() -> Result<()> {
                     .into();
 
             let client = reqwest::Client::new();
-            for id in ids {
+            for (id, _) in resolve_targets(&providers, &targets)? {
                 let body = serde_json::json!({
                     "account_id": id,
                     "source_post": source,
@@ -240,15 +240,13 @@ async fn main() -> Result<()> {
 
         Cmd::Draft { post, targets, daemon, api_key } => {
             let source = load_post(&post)?;
-            let ids = resolve_targets(&providers, &targets)?;
-
             let daemon_url = daemon
                 .or_else(|| cfg.daemon_url.clone())
                 .unwrap_or_else(|| "http://localhost:8080".to_string());
             let api_key = api_key.or_else(|| cfg.daemon_api_key.clone());
 
             let client = reqwest::Client::new();
-            for id in ids {
+            for (id, _) in resolve_targets(&providers, &targets)? {
                 let body = serde_json::json!({
                     "account_id": id,
                     "source_post": source,
@@ -274,19 +272,16 @@ async fn main() -> Result<()> {
 
         Cmd::Publish { post, targets } => {
             let source = load_post(&post)?;
-            let ids = resolve_targets(&providers, &targets)?;
-            for id in ids {
-                let p = providers.get(&id).unwrap();
+            for (id, p) in resolve_targets(&providers, &targets)? {
                 let resolved = source.resolve(p.kind());
                 let prepared = p.compose(&resolved)?;
                 for w in &prepared.warnings {
                     eprintln!("⚠ [{id}] {w}");
                 }
                 match p.execute(&prepared).await {
-                    Ok(r) => println!(
-                        "✓ {id} → {}",
-                        r.post_url.as_deref().unwrap_or(&r.platform_id)
-                    ),
+                    Ok(r) => {
+                        println!("✓ {id} → {}", r.post_url.as_deref().unwrap_or(&r.platform_id))
+                    }
                     Err(e) => eprintln!("✗ {id} → {e}"),
                 }
             }
