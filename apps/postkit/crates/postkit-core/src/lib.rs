@@ -126,6 +126,15 @@ pub enum Step {
         #[serde(default)]
         media_refs: Vec<String>,
     },
+    /// Continuar un hilo (reply al post anterior). Solo providers con
+    /// `supports_threads = true` producen este paso.
+    ThreadContinue {
+        text: String,
+        #[serde(default)]
+        facets: serde_json::Value,
+        #[serde(default)]
+        media_refs: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

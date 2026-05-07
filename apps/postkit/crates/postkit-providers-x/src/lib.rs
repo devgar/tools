@@ -269,6 +269,7 @@ impl Provider for X {
                     post_text = text.clone();
                     post_media_refs = media_refs.clone();
                 }
+                Step::ThreadContinue { .. } => {}
             }
         }
 
