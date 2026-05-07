@@ -90,12 +90,7 @@ impl X {
             .collect::<Vec<_>>()
             .join("&");
 
-        let base = format!(
-            "{}&{}&{}",
-            method.to_uppercase(),
-            pct(url),
-            pct(&param_string)
-        );
+        let base = format!("{}&{}&{}", method.to_uppercase(), pct(url), pct(&param_string));
         let signing_key = format!("{}&{}", pct(&self.api_secret), pct(&self.access_token_secret));
 
         let mut mac = Hmac::<Sha1>::new_from_slice(signing_key.as_bytes()).unwrap();
@@ -117,8 +112,8 @@ impl X {
     async fn upload_media(&self, bytes: Vec<u8>) -> anyhow::Result<String> {
         let url = format!("{UPLOAD_BASE}/1.1/media/upload.json");
         let auth = self.oauth_header("POST", &url, &[]);
-        let form = reqwest::multipart::Form::new()
-            .part("media", reqwest::multipart::Part::bytes(bytes));
+        let form =
+            reqwest::multipart::Form::new().part("media", reqwest::multipart::Part::bytes(bytes));
         let res: Value = self
             .http
             .post(&url)
@@ -140,25 +135,42 @@ impl X {
 // OAuth requires encoding everything else. NON_ALPHANUMERIC encodes "-._~" por
 // error — esta constante los deja sin codificar como exige la spec.
 const OAUTH_ENCODE: &AsciiSet = &CONTROLS
-    .add(b' ').add(b'!').add(b'"').add(b'#').add(b'$').add(b'%')
-    .add(b'&').add(b'\'').add(b'(').add(b')').add(b'*').add(b'+')
-    .add(b',').add(b'/').add(b':').add(b';').add(b'<').add(b'=')
-    .add(b'>').add(b'?').add(b'@').add(b'[').add(b'\\').add(b']')
-    .add(b'^').add(b'`').add(b'{').add(b'|').add(b'}');
+    .add(b' ')
+    .add(b'!')
+    .add(b'"')
+    .add(b'#')
+    .add(b'$')
+    .add(b'%')
+    .add(b'&')
+    .add(b'\'')
+    .add(b'(')
+    .add(b')')
+    .add(b'*')
+    .add(b'+')
+    .add(b',')
+    .add(b'/')
+    .add(b':')
+    .add(b';')
+    .add(b'<')
+    .add(b'=')
+    .add(b'>')
+    .add(b'?')
+    .add(b'@')
+    .add(b'[')
+    .add(b'\\')
+    .add(b']')
+    .add(b'^')
+    .add(b'`')
+    .add(b'{')
+    .add(b'|')
+    .add(b'}');
 
-fn pct(s: &str) -> String {
-    utf8_percent_encode(s, OAUTH_ENCODE).to_string()
-}
-
+fn pct(s: &str) -> String { utf8_percent_encode(s, OAUTH_ENCODE).to_string() }
 
 #[async_trait]
 impl Provider for X {
-    fn kind(&self) -> ProviderKind {
-        ProviderKind::X
-    }
-    fn account_id(&self) -> &str {
-        &self.account_id
-    }
+    fn kind(&self) -> ProviderKind { ProviderKind::X }
+    fn account_id(&self) -> &str { &self.account_id }
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             max_text_graphemes: MAX_CHARS,
@@ -239,11 +251,7 @@ impl Provider for X {
             media_refs.push(ref_id);
         }
 
-        steps.push(Step::CreatePost {
-            text,
-            facets: Value::Array(vec![]),
-            media_refs,
-        });
+        steps.push(Step::CreatePost { text, facets: Value::Array(vec![]), media_refs });
 
         Ok(PreparedPost {
             account_id: self.account_id.clone(),
@@ -299,26 +307,29 @@ impl Provider for X {
         let tweet_id = res["data"]["id"].as_str().unwrap_or_default().to_string();
         let post_url = format!("https://x.com/i/web/status/{tweet_id}");
 
-        Ok(PublishResult {
-            post_url: Some(post_url),
-            platform_id: tweet_id,
-            raw: res,
-        })
+        Ok(PublishResult { post_url: Some(post_url), platform_id: tweet_id, raw: res })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use postkit_core::{MediaRef, SourcePost};
     use std::path::PathBuf;
+
+    use postkit_core::{MediaRef, SourcePost};
+
+    use super::*;
 
     fn provider() -> X {
         X::new("test".into(), "key".into(), "secret".into(), "token".into(), "tsecret".into())
     }
 
     fn src(text: &str) -> SourcePost {
-        SourcePost { text: text.into(), media: vec![], hashtags: vec![], platforms: Default::default() }
+        SourcePost {
+            text: text.into(),
+            media: vec![],
+            hashtags: vec![],
+            platforms: Default::default(),
+        }
     }
 
     #[test]
@@ -370,7 +381,12 @@ mod tests {
         let media = (0..5)
             .map(|i| MediaRef { path: PathBuf::from(format!("img{i}.png")), alt: None, url: None })
             .collect();
-        let source = SourcePost { text: "test".into(), media, hashtags: vec![], platforms: Default::default() };
+        let source = SourcePost {
+            text: "test".into(),
+            media,
+            hashtags: vec![],
+            platforms: Default::default(),
+        };
         assert!(provider().compose(&source).is_err());
     }
 
@@ -389,7 +405,9 @@ mod tests {
     #[test]
     fn compose_no_facets_in_steps() {
         // X no usa facets AT — el array debe estar vacío
-        let result = provider().compose(&src("Visit https://example.com")).unwrap();
+        let result = provider()
+            .compose(&src("Visit https://example.com"))
+            .unwrap();
         match &result.steps[0] {
             Step::CreatePost { facets, .. } => {
                 assert!(facets.as_array().unwrap().is_empty());
@@ -402,7 +420,11 @@ mod tests {
     fn compose_generates_upload_steps_for_media() {
         let source = SourcePost {
             text: "test".into(),
-            media: vec![MediaRef { path: PathBuf::from("a.jpg"), alt: Some("desc".into()), url: None }],
+            media: vec![MediaRef {
+                path: PathBuf::from("a.jpg"),
+                alt: Some("desc".into()),
+                url: None,
+            }],
             hashtags: vec![],
             platforms: Default::default(),
         };

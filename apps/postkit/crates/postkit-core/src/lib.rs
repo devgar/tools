@@ -7,10 +7,10 @@
 //!                         que describe exactamente qué hay que hacer.
 //!   3. `execute()`     — ejecuta los `Step`s contra la API de la plataforma.
 
+use std::{collections::HashMap, path::PathBuf};
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -78,9 +78,15 @@ impl SourcePost {
     pub fn resolve(&self, kind: ProviderKind) -> SourcePost {
         let ov = self.platforms.get(kind.config_key());
         SourcePost {
-            text: ov.and_then(|o| o.text.clone()).unwrap_or_else(|| self.text.clone()),
-            media: ov.and_then(|o| o.media.clone()).unwrap_or_else(|| self.media.clone()),
-            hashtags: ov.and_then(|o| o.hashtags.clone()).unwrap_or_else(|| self.hashtags.clone()),
+            text: ov
+                .and_then(|o| o.text.clone())
+                .unwrap_or_else(|| self.text.clone()),
+            media: ov
+                .and_then(|o| o.media.clone())
+                .unwrap_or_else(|| self.media.clone()),
+            hashtags: ov
+                .and_then(|o| o.hashtags.clone())
+                .unwrap_or_else(|| self.hashtags.clone()),
             platforms: HashMap::new(),
         }
     }
@@ -111,11 +117,7 @@ pub struct PreparedPost {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Step {
     /// Subir un fichero y guardar la referencia bajo `ref_id` para usar luego.
-    UploadMedia {
-        path: PathBuf,
-        alt: Option<String>,
-        ref_id: String,
-    },
+    UploadMedia { path: PathBuf, alt: Option<String>, ref_id: String },
     /// Crear el post, referenciando medias subidas por `ref_id`.
     /// `facets` es un valor JSON específico de la plataforma — en Bluesky
     /// es el array de facets AT Protocol, en X sería attachments, etc.

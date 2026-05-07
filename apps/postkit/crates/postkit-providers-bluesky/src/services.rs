@@ -6,12 +6,14 @@
 //! - Métodos adicionales sobre `Bluesky` (`upload_media`, `publish_steps`, `post_record`)
 //!   que necesitan `self.client` y se llaman como `self.método()` desde el Provider.
 
-use super::Bluesky;
+use std::collections::HashMap;
+
 use chrono::Utc;
 use postkit_core::*;
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use unicode_segmentation::UnicodeSegmentation;
+
+use super::Bluesky;
 
 pub(crate) type BlobMap = HashMap<String, (Value, Option<String>)>;
 
@@ -23,9 +25,13 @@ pub(crate) fn build_post_text(text: &str, hashtags: &[String]) -> String {
         return text.to_string();
     }
     let mut result = text.to_string();
-    if !result.is_empty() { result.push_str("\n\n"); }
+    if !result.is_empty() {
+        result.push_str("\n\n");
+    }
     for (i, tag) in hashtags.iter().enumerate() {
-        if i > 0 { result.push(' '); }
+        if i > 0 {
+            result.push(' ');
+        }
         result.push('#');
         result.push_str(tag);
     }
@@ -49,7 +55,11 @@ pub(crate) fn prepare_media_steps(
         if m.alt.is_none() {
             warnings.push(format!("Imagen {i} sin alt text (accesibilidad)"));
         }
-        steps.push(Step::UploadMedia { path: m.path.clone(), alt: m.alt.clone(), ref_id: ref_id.clone() });
+        steps.push(Step::UploadMedia {
+            path: m.path.clone(),
+            alt: m.alt.clone(),
+            ref_id: ref_id.clone(),
+        });
         media_refs.push(ref_id);
     }
     Ok((steps, media_refs, warnings))
@@ -180,7 +190,9 @@ impl Bluesky {
             match step {
                 Step::UploadMedia { .. } => {}
                 Step::CreatePost { text, facets, media_refs } => {
-                    let res = self.post_record(text, facets.clone(), media_refs, blobs, None).await?;
+                    let res = self
+                        .post_record(text, facets.clone(), media_refs, blobs, None)
+                        .await?;
                     let cid = res.raw["cid"].as_str().unwrap_or_default().to_string();
                     thread_root = Some((res.platform_id.clone(), cid.clone()));
                     thread_parent = Some((res.platform_id.clone(), cid));
@@ -188,13 +200,17 @@ impl Bluesky {
                 }
                 Step::ThreadContinue { text, facets, media_refs } => {
                     let reply = match (&thread_root, &thread_parent) {
-                        (Some((root_uri, root_cid)), Some((parent_uri, parent_cid))) => Some(json!({
-                            "root":   { "uri": root_uri,   "cid": root_cid },
-                            "parent": { "uri": parent_uri, "cid": parent_cid },
-                        })),
+                        (Some((root_uri, root_cid)), Some((parent_uri, parent_cid))) => {
+                            Some(json!({
+                                "root":   { "uri": root_uri,   "cid": root_cid },
+                                "parent": { "uri": parent_uri, "cid": parent_cid },
+                            }))
+                        }
                         _ => None,
                     };
-                    let res = self.post_record(text, facets.clone(), media_refs, blobs, reply).await?;
+                    let res = self
+                        .post_record(text, facets.clone(), media_refs, blobs, reply)
+                        .await?;
                     let cid = res.raw["cid"].as_str().unwrap_or_default().to_string();
                     thread_parent = Some((res.platform_id, cid));
                 }

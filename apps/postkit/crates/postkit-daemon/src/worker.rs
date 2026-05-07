@@ -1,9 +1,11 @@
+use std::{collections::HashMap, sync::Arc};
+
 use postkit_core::Provider;
 use postkit_store::{ScheduledPost, Store};
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::watch;
-use tokio::time::{sleep, Duration};
+use tokio::{
+    sync::watch,
+    time::{sleep, Duration},
+};
 use tracing::{error, info, warn};
 
 pub async fn run(
@@ -14,7 +16,10 @@ pub async fn run(
     retry_delay_secs: u64,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    info!("worker iniciado (poll={}s, max_attempts={}, retry_delay={}s)", poll_secs, max_attempts, retry_delay_secs);
+    info!(
+        "worker iniciado (poll={}s, max_attempts={}, retry_delay={}s)",
+        poll_secs, max_attempts, retry_delay_secs
+    );
     loop {
         match store.claim_due().await {
             Ok(due) if !due.is_empty() => {
@@ -27,14 +32,24 @@ pub async fn run(
                         let account = post.account_id.clone();
                         match publish(&post, &providers).await {
                             Ok(url) => {
-                                info!(id, account, url = url.as_deref().unwrap_or("-"), "publicado");
+                                info!(
+                                    id,
+                                    account,
+                                    url = url.as_deref().unwrap_or("-"),
+                                    "publicado"
+                                );
                                 let _ = store.mark_published(id, url.as_deref()).await;
                             }
                             Err(e) => {
                                 let attempt = post.attempts + 1;
                                 warn!(id, account, attempt, error = %e, "fallo en publicación");
                                 let _ = store
-                                    .attempt_or_fail(id, &e.to_string(), max_attempts, retry_delay_secs)
+                                    .attempt_or_fail(
+                                        id,
+                                        &e.to_string(),
+                                        max_attempts,
+                                        retry_delay_secs,
+                                    )
                                     .await;
                             }
                         }

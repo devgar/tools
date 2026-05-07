@@ -20,6 +20,7 @@ impl Bluesky {
 // ─── Provider ────────────────────────────────────────────────────────────────
 
 const MAX_GRAPHEMES: usize = 300;
+
 const MAX_IMAGES: usize = 4;
 
 #[async_trait]
@@ -51,7 +52,12 @@ impl Provider for Bluesky {
         let (media_steps, media_refs, warnings) = prepare_media_steps(&post.media, MAX_IMAGES)?;
         let text_steps = build_text_steps(&text, MAX_GRAPHEMES, media_refs);
         let steps = media_steps.into_iter().chain(text_steps).collect();
-        Ok(PreparedPost { account_id: self.account_id.clone(), provider: ProviderKind::Bluesky, steps, warnings })
+        Ok(PreparedPost {
+            account_id: self.account_id.clone(),
+            provider: ProviderKind::Bluesky,
+            steps,
+            warnings,
+        })
     }
 
     async fn execute(&self, prepared: &PreparedPost) -> anyhow::Result<PublishResult> {
@@ -64,17 +70,22 @@ impl Provider for Bluesky {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use postkit_core::{MediaRef, SourcePost};
     use std::path::PathBuf;
+
+    use postkit_core::{MediaRef, SourcePost};
     use unicode_segmentation::UnicodeSegmentation;
 
-    fn provider() -> Bluesky {
-        Bluesky::new("test".into(), "test.bsky.social".into(), "pw".into())
-    }
+    use super::*;
+
+    fn provider() -> Bluesky { Bluesky::new("test".into(), "test.bsky.social".into(), "pw".into()) }
 
     fn src(text: &str) -> SourcePost {
-        SourcePost { text: text.into(), media: vec![], hashtags: vec![], platforms: Default::default() }
+        SourcePost {
+            text: text.into(),
+            media: vec![],
+            hashtags: vec![],
+            platforms: Default::default(),
+        }
     }
 
     #[test]
@@ -155,7 +166,12 @@ mod tests {
         let media = (0..5)
             .map(|i| MediaRef { path: PathBuf::from(format!("img{i}.png")), alt: None, url: None })
             .collect();
-        let source = SourcePost { text: "test".into(), media, hashtags: vec![], platforms: Default::default() };
+        let source = SourcePost {
+            text: "test".into(),
+            media,
+            hashtags: vec![],
+            platforms: Default::default(),
+        };
         assert!(provider().compose(&source).is_err());
     }
 
@@ -174,7 +190,11 @@ mod tests {
     fn compose_no_warning_with_alt() {
         let source = SourcePost {
             text: "test".into(),
-            media: vec![MediaRef { path: PathBuf::from("img.png"), alt: Some("desc".into()), url: None }],
+            media: vec![MediaRef {
+                path: PathBuf::from("img.png"),
+                alt: Some("desc".into()),
+                url: None,
+            }],
             hashtags: vec![],
             platforms: Default::default(),
         };
@@ -183,7 +203,9 @@ mod tests {
 
     #[test]
     fn compose_detects_url_facet() {
-        let result = provider().compose(&src("Visit https://rust-lang.org please")).unwrap();
+        let result = provider()
+            .compose(&src("Visit https://rust-lang.org please"))
+            .unwrap();
         match &result.steps[0] {
             Step::CreatePost { facets, .. } => {
                 let arr = facets.as_array().unwrap();
@@ -211,7 +233,9 @@ mod tests {
 
     #[test]
     fn compose_detects_mention_facet() {
-        let result = provider().compose(&src("Hello @alice.bsky.social!")).unwrap();
+        let result = provider()
+            .compose(&src("Hello @alice.bsky.social!"))
+            .unwrap();
         match &result.steps[0] {
             Step::CreatePost { facets, .. } => {
                 let arr = facets.as_array().unwrap();
@@ -225,7 +249,9 @@ mod tests {
 
     #[test]
     fn compose_facet_byte_offsets_are_correct() {
-        let result = provider().compose(&src("Visit https://rust-lang.org end")).unwrap();
+        let result = provider()
+            .compose(&src("Visit https://rust-lang.org end"))
+            .unwrap();
         match &result.steps[0] {
             Step::CreatePost { facets, .. } => {
                 let f = &facets.as_array().unwrap()[0];

@@ -1,6 +1,6 @@
+use std::{collections::HashMap, path::Path};
+
 use serde::Deserialize;
-use std::collections::HashMap;
-use std::path::Path;
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -19,10 +19,7 @@ pub struct Config {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "provider", rename_all = "snake_case")]
 pub enum AppConfig {
-    X {
-        api_key: String,
-        api_secret: String,
-    },
+    X { api_key: String, api_secret: String },
     Meta,
 }
 

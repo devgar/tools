@@ -41,13 +41,21 @@ impl From<Row> for ScheduledPost {
             account_id: r.account_id,
             provider: r.provider,
             source_post: r.source_post,
-            scheduled_at: Utc.timestamp_opt(r.scheduled_at, 0).single().unwrap_or_default(),
+            scheduled_at: Utc
+                .timestamp_opt(r.scheduled_at, 0)
+                .single()
+                .unwrap_or_default(),
             status: r.status,
             attempts: r.attempts,
-            published_at: r.published_at.and_then(|t| Utc.timestamp_opt(t, 0).single()),
+            published_at: r
+                .published_at
+                .and_then(|t| Utc.timestamp_opt(t, 0).single()),
             post_url: r.post_url,
             error: r.error,
-            created_at: Utc.timestamp_opt(r.created_at, 0).single().unwrap_or_default(),
+            created_at: Utc
+                .timestamp_opt(r.created_at, 0)
+                .single()
+                .unwrap_or_default(),
         }
     }
 }
@@ -83,12 +91,10 @@ impl Store {
     }
 
     pub(crate) async fn recover_running(&self) -> anyhow::Result<()> {
-        let n = sqlx::query(
-            "UPDATE scheduled_posts SET status='pending' WHERE status='running'",
-        )
-        .execute(&self.pool)
-        .await?
-        .rows_affected();
+        let n = sqlx::query("UPDATE scheduled_posts SET status='pending' WHERE status='running'")
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
         if n > 0 {
             tracing::warn!("recover_running: {} posts rescatados de estado 'running'", n);
         }
@@ -163,10 +169,7 @@ impl Store {
             qb.push(" OFFSET ").push_bind(offset);
         }
 
-        let rows: Vec<Row> = qb
-            .build_query_as::<Row>()
-            .fetch_all(&self.pool)
-            .await?;
+        let rows: Vec<Row> = qb.build_query_as::<Row>().fetch_all(&self.pool).await?;
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
@@ -200,13 +203,11 @@ impl Store {
     }
 
     pub async fn mark_failed(&self, id: i64, error: &str) -> anyhow::Result<()> {
-        sqlx::query(
-            "UPDATE scheduled_posts SET status='failed', error=? WHERE id=?",
-        )
-        .bind(error)
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("UPDATE scheduled_posts SET status='failed', error=? WHERE id=?")
+            .bind(error)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -280,10 +281,13 @@ impl Store {
             sep.push("source_post = ").push_bind_unseparated(sp);
         }
         if let Some(at) = scheduled_at {
-            sep.push("scheduled_at = ").push_bind_unseparated(at.timestamp());
+            sep.push("scheduled_at = ")
+                .push_bind_unseparated(at.timestamp());
             sep.push("status = CASE WHEN status = 'draft' THEN 'pending' ELSE status END");
         }
-        qb.push(" WHERE id = ").push_bind(id).push(" AND status IN ('pending', 'draft')");
+        qb.push(" WHERE id = ")
+            .push_bind(id)
+            .push(" AND status IN ('pending', 'draft')");
         let n = qb.build().execute(&self.pool).await?.rows_affected();
         Ok(n > 0)
     }
@@ -318,19 +322,21 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use chrono::{Duration, Utc};
 
-    async fn mem_store() -> Store {
-        Store::open(":memory:").await.unwrap()
-    }
+    use super::*;
+
+    async fn mem_store() -> Store { Store::open(":memory:").await.unwrap() }
 
     const SRC: &str = r#"{"text":"hola","media":[],"hashtags":[]}"#;
 
     #[tokio::test]
     async fn schedule_creates_pending_record() {
         let s = mem_store().await;
-        let id = s.schedule("personal", "bluesky", SRC, Utc::now()).await.unwrap();
+        let id = s
+            .schedule("personal", "bluesky", SRC, Utc::now())
+            .await
+            .unwrap();
         assert_eq!(id, 1);
 
         let all = s.list(&ListFilters::default()).await.unwrap();
@@ -364,7 +370,9 @@ mod tests {
     #[tokio::test]
     async fn list_filter_by_provider_and_account() {
         let s = mem_store().await;
-        s.schedule("alice", "bluesky", SRC, Utc::now()).await.unwrap();
+        s.schedule("alice", "bluesky", SRC, Utc::now())
+            .await
+            .unwrap();
         s.schedule("bob", "x", SRC, Utc::now()).await.unwrap();
 
         let bsky = s
@@ -391,10 +399,7 @@ mod tests {
         s.schedule("b", "bluesky", SRC, future).await.unwrap();
 
         let only_past = s
-            .list(&ListFilters {
-                to: Some(Utc::now()),
-                ..Default::default()
-            })
+            .list(&ListFilters { to: Some(Utc::now()), ..Default::default() })
             .await
             .unwrap();
         assert_eq!(only_past.len(), 1);
@@ -405,7 +410,9 @@ mod tests {
     async fn list_pagination() {
         let s = mem_store().await;
         for i in 0..5 {
-            s.schedule(&format!("acc{i}"), "bluesky", SRC, Utc::now()).await.unwrap();
+            s.schedule(&format!("acc{i}"), "bluesky", SRC, Utc::now())
+                .await
+                .unwrap();
         }
         let page = s
             .list(&ListFilters { limit: Some(2), offset: Some(1), ..Default::default() })
@@ -437,7 +444,9 @@ mod tests {
     async fn mark_published_updates_fields() {
         let s = mem_store().await;
         let id = s.schedule("a", "bluesky", SRC, Utc::now()).await.unwrap();
-        s.mark_published(id, Some("https://bsky.app/profile/a/post/123")).await.unwrap();
+        s.mark_published(id, Some("https://bsky.app/profile/a/post/123"))
+            .await
+            .unwrap();
 
         let post = &s.list(&ListFilters::default()).await.unwrap()[0];
         assert_eq!(post.status, "published");
@@ -468,7 +477,9 @@ mod tests {
         let id = s.schedule("a", "bluesky", SRC, past).await.unwrap();
         s.claim_due().await.unwrap(); // status → running
 
-        s.attempt_or_fail(id, "transient error", 3, 60).await.unwrap();
+        s.attempt_or_fail(id, "transient error", 3, 60)
+            .await
+            .unwrap();
 
         let post = s.get_by_id(id).await.unwrap().unwrap();
         assert_eq!(post.status, "pending");
@@ -524,7 +535,10 @@ mod tests {
     async fn update_pending_source_post() {
         let s = mem_store().await;
         let id = s.schedule("a", "bluesky", SRC, Utc::now()).await.unwrap();
-        assert!(s.update(id, Some(r#"{"text":"nuevo"}"#), None).await.unwrap());
+        assert!(s
+            .update(id, Some(r#"{"text":"nuevo"}"#), None)
+            .await
+            .unwrap());
         let post = s.get_by_id(id).await.unwrap().unwrap();
         assert_eq!(post.source_post, r#"{"text":"nuevo"}"#);
     }
@@ -579,7 +593,10 @@ mod tests {
     async fn update_draft_source_post_stays_draft() {
         let s = mem_store().await;
         let id = s.create_draft("a", "bluesky", SRC).await.unwrap();
-        assert!(s.update(id, Some(r#"{"text":"nuevo"}"#), None).await.unwrap());
+        assert!(s
+            .update(id, Some(r#"{"text":"nuevo"}"#), None)
+            .await
+            .unwrap());
         let post = s.get_by_id(id).await.unwrap().unwrap();
         assert_eq!(post.status, "draft");
         assert_eq!(post.source_post, r#"{"text":"nuevo"}"#);

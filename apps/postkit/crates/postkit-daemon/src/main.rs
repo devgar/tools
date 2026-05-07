@@ -2,22 +2,19 @@ mod config;
 mod routes;
 mod worker;
 
+use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
+
 use anyhow::Result;
 use clap::Parser;
+use config::{AccountConfig, AppConfig, DaemonConfig};
 use postkit_core::Provider;
 use postkit_providers_bluesky::Bluesky;
 use postkit_providers_meta::{FacebookPage, Instagram};
 use postkit_providers_x::X;
 use postkit_store::Store;
 use routes::AppState;
-use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::path::PathBuf;
-use std::sync::Arc;
 use tokio::sync::watch;
 use tracing::info;
-
-use config::{AccountConfig, AppConfig, DaemonConfig};
 
 #[derive(Parser)]
 #[command(name = "postkit-daemon")]
@@ -75,7 +72,9 @@ async fn main() -> Result<()> {
 
 async fn shutdown_signal() {
     let ctrl_c = async {
-        tokio::signal::ctrl_c().await.expect("failed to install Ctrl+C handler");
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
     };
     #[cfg(unix)]
     let sigterm = async {
@@ -107,12 +106,19 @@ fn build_providers(
             AccountConfig::X { app, access_token, access_token_secret } => {
                 let AppConfig::X { api_key, api_secret } = apps
                     .get(&app)
-                    .ok_or_else(|| anyhow::anyhow!("app '{app}' no encontrada"))? else {
+                    .ok_or_else(|| anyhow::anyhow!("app '{app}' no encontrada"))?
+                else {
                     anyhow::bail!("app '{app}' no es de tipo x");
                 };
                 out.insert(
                     id.clone(),
-                    Arc::new(X::new(id, api_key.clone(), api_secret.clone(), access_token, access_token_secret)),
+                    Arc::new(X::new(
+                        id,
+                        api_key.clone(),
+                        api_secret.clone(),
+                        access_token,
+                        access_token_secret,
+                    )),
                 );
             }
             AccountConfig::FacebookPage { app: _, page_id, page_access_token } => {

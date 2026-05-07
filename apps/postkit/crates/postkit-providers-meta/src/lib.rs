@@ -88,7 +88,10 @@ impl Provider for FacebookPage {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("respuesta inesperada: {body}"))?
             .to_string();
-        let handle = body["username"].as_str().unwrap_or(&self.page_id).to_string();
+        let handle = body["username"]
+            .as_str()
+            .unwrap_or(&self.page_id)
+            .to_string();
         Ok(AccountInfo {
             id: self.account_id.clone(),
             provider: ProviderKind::MetaPage,
@@ -100,14 +103,23 @@ impl Provider for FacebookPage {
     fn compose(&self, post: &SourcePost) -> anyhow::Result<PreparedPost> {
         let mut text = post.text.clone();
         if text.graphemes(true).count() > FB_MAX_GRAPHEMES {
-            anyhow::bail!("Facebook: texto demasiado largo ({} grafemas, máx {})",
-                text.graphemes(true).count(), FB_MAX_GRAPHEMES);
+            anyhow::bail!(
+                "Facebook: texto demasiado largo ({} grafemas, máx {})",
+                text.graphemes(true).count(),
+                FB_MAX_GRAPHEMES
+            );
         }
         if post.media.len() > FB_MAX_IMAGES {
-            anyhow::bail!("Facebook: máximo {} imágenes, se proporcionaron {}", FB_MAX_IMAGES, post.media.len());
+            anyhow::bail!(
+                "Facebook: máximo {} imágenes, se proporcionaron {}",
+                FB_MAX_IMAGES,
+                post.media.len()
+            );
         }
         if !post.hashtags.is_empty() {
-            if !text.is_empty() { text.push_str("\n\n"); }
+            if !text.is_empty() {
+                text.push_str("\n\n");
+            }
             let tags: Vec<String> = post.hashtags.iter().map(|t| format!("#{t}")).collect();
             text.push_str(&tags.join(" "));
         }
@@ -119,11 +131,20 @@ impl Provider for FacebookPage {
             if m.alt.is_none() {
                 warnings.push(format!("Image {i} missing alt text"));
             }
-            steps.push(Step::UploadMedia { path: m.path.clone(), alt: m.alt.clone(), ref_id: ref_id.clone() });
+            steps.push(Step::UploadMedia {
+                path: m.path.clone(),
+                alt: m.alt.clone(),
+                ref_id: ref_id.clone(),
+            });
             media_refs.push(ref_id);
         }
         steps.push(Step::CreatePost { text, facets: Value::Null, media_refs });
-        Ok(PreparedPost { account_id: self.account_id.clone(), provider: ProviderKind::MetaPage, steps, warnings })
+        Ok(PreparedPost {
+            account_id: self.account_id.clone(),
+            provider: ProviderKind::MetaPage,
+            steps,
+            warnings,
+        })
     }
 
     async fn execute(&self, prepared: &PreparedPost) -> anyhow::Result<PublishResult> {
@@ -148,7 +169,8 @@ impl Provider for FacebookPage {
 
         let mut body = json!({ "message": post_text, "access_token": self.page_access_token });
         if !post_media_refs.is_empty() {
-            let attached: Vec<Value> = media_fbids.iter()
+            let attached: Vec<Value> = media_fbids
+                .iter()
                 .map(|id| json!({ "media_fbid": id }))
                 .collect();
             body["attached_media"] = json!(attached);
@@ -190,11 +212,14 @@ impl Instagram {
         Self { account_id, ig_user_id, access_token, http: Client::new() }
     }
 
-    async fn create_container(&self, image_url: &str, caption: Option<&str>, carousel_item: bool) -> anyhow::Result<String> {
-        let mut params = vec![
-            ("image_url", image_url.to_string()),
-            ("access_token", self.access_token.clone()),
-        ];
+    async fn create_container(
+        &self,
+        image_url: &str,
+        caption: Option<&str>,
+        carousel_item: bool,
+    ) -> anyhow::Result<String> {
+        let mut params =
+            vec![("image_url", image_url.to_string()), ("access_token", self.access_token.clone())];
         if carousel_item {
             params.push(("is_carousel_item", "true".to_string()));
         } else if let Some(cap) = caption {
@@ -215,7 +240,11 @@ impl Instagram {
             .ok_or_else(|| anyhow::anyhow!("Instagram create_container: missing id"))
     }
 
-    async fn create_carousel_container(&self, children: &[String], caption: &str) -> anyhow::Result<String> {
+    async fn create_carousel_container(
+        &self,
+        children: &[String],
+        caption: &str,
+    ) -> anyhow::Result<String> {
         let children_str = children.join(",");
         let res: Value = self
             .http
@@ -296,14 +325,21 @@ impl Provider for Instagram {
     fn compose(&self, post: &SourcePost) -> anyhow::Result<PreparedPost> {
         let mut text = post.text.clone();
         if text.graphemes(true).count() > IG_MAX_GRAPHEMES {
-            anyhow::bail!("Instagram: caption demasiado largo ({} grafemas, máx {})",
-                text.graphemes(true).count(), IG_MAX_GRAPHEMES);
+            anyhow::bail!(
+                "Instagram: caption demasiado largo ({} grafemas, máx {})",
+                text.graphemes(true).count(),
+                IG_MAX_GRAPHEMES
+            );
         }
         if post.media.is_empty() {
             anyhow::bail!("Instagram: se requiere al menos una imagen");
         }
         if post.media.len() > IG_MAX_IMAGES {
-            anyhow::bail!("Instagram: máximo {} imágenes, se proporcionaron {}", IG_MAX_IMAGES, post.media.len());
+            anyhow::bail!(
+                "Instagram: máximo {} imágenes, se proporcionaron {}",
+                IG_MAX_IMAGES,
+                post.media.len()
+            );
         }
         // All media items must have a public URL
         for (i, m) in post.media.iter().enumerate() {
@@ -312,7 +348,9 @@ impl Provider for Instagram {
             }
         }
         if !post.hashtags.is_empty() {
-            if !text.is_empty() { text.push_str("\n\n"); }
+            if !text.is_empty() {
+                text.push_str("\n\n");
+            }
             let tags: Vec<String> = post.hashtags.iter().map(|t| format!("#{t}")).collect();
             text.push_str(&tags.join(" "));
         }
@@ -328,20 +366,24 @@ impl Provider for Instagram {
             url_entries.push(json!({ "ref_id": ref_id, "url": m.url }));
             media_refs.push(ref_id);
         }
-        let steps = vec![Step::CreatePost {
-            text,
-            facets: json!(url_entries),
-            media_refs,
-        }];
-        Ok(PreparedPost { account_id: self.account_id.clone(), provider: ProviderKind::MetaInstagram, steps, warnings })
+        let steps = vec![Step::CreatePost { text, facets: json!(url_entries), media_refs }];
+        Ok(PreparedPost {
+            account_id: self.account_id.clone(),
+            provider: ProviderKind::MetaInstagram,
+            steps,
+            warnings,
+        })
     }
 
     async fn execute(&self, prepared: &PreparedPost) -> anyhow::Result<PublishResult> {
-        let Step::CreatePost { text, facets, media_refs } = prepared.steps
+        let Step::CreatePost { text, facets, media_refs } = prepared
+            .steps
             .iter()
             .find(|s| matches!(s, Step::CreatePost { .. }))
             .ok_or_else(|| anyhow::anyhow!("Instagram execute: no CreatePost step"))?
-        else { unreachable!() };
+        else {
+            unreachable!()
+        };
 
         // Resolve ref_id → URL from facets array
         let url_map: std::collections::HashMap<String, String> = facets
@@ -356,7 +398,8 @@ impl Provider for Instagram {
             .collect();
 
         let media_id = if media_refs.len() == 1 {
-            let url = url_map.get(&media_refs[0])
+            let url = url_map
+                .get(&media_refs[0])
                 .ok_or_else(|| anyhow::anyhow!("Instagram: URL no encontrada para img0"))?;
             let creation_id = self.create_container(url, Some(text), false).await?;
             self.publish_container(&creation_id).await?
@@ -364,7 +407,8 @@ impl Provider for Instagram {
             // Carousel
             let mut children = Vec::new();
             for ref_id in media_refs {
-                let url = url_map.get(ref_id)
+                let url = url_map
+                    .get(ref_id)
                     .ok_or_else(|| anyhow::anyhow!("Instagram: URL no encontrada para {ref_id}"))?;
                 let id = self.create_container(url, None, true).await?;
                 children.push(id);
@@ -385,20 +429,23 @@ impl Provider for Instagram {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use postkit_core::{MediaRef, SourcePost};
     use std::path::PathBuf;
 
-    fn fb() -> FacebookPage {
-        FacebookPage::new("test".into(), "123".into(), "TOKEN".into())
-    }
+    use postkit_core::{MediaRef, SourcePost};
 
-    fn ig() -> Instagram {
-        Instagram::new("test".into(), "456".into(), "TOKEN".into())
-    }
+    use super::*;
+
+    fn fb() -> FacebookPage { FacebookPage::new("test".into(), "123".into(), "TOKEN".into()) }
+
+    fn ig() -> Instagram { Instagram::new("test".into(), "456".into(), "TOKEN".into()) }
 
     fn src(text: &str) -> SourcePost {
-        SourcePost { text: text.into(), media: vec![], hashtags: vec![], platforms: Default::default() }
+        SourcePost {
+            text: text.into(),
+            media: vec![],
+            hashtags: vec![],
+            platforms: Default::default(),
+        }
     }
 
     fn media_with_url(url: &str) -> MediaRef {
@@ -426,7 +473,12 @@ mod tests {
 
     #[test]
     fn fb_compose_appends_hashtags() {
-        let post = SourcePost { text: "Hi".into(), hashtags: vec!["rust".into()], media: vec![], platforms: Default::default() };
+        let post = SourcePost {
+            text: "Hi".into(),
+            hashtags: vec!["rust".into()],
+            media: vec![],
+            platforms: Default::default(),
+        };
         let result = fb().compose(&post).unwrap();
         let Step::CreatePost { text, .. } = &result.steps[0] else { panic!() };
         assert_eq!(text, "Hi\n\n#rust");
@@ -439,7 +491,9 @@ mod tests {
 
     #[test]
     fn fb_compose_rejects_over_limit() {
-        assert!(fb().compose(&src(&"a".repeat(FB_MAX_GRAPHEMES + 1))).is_err());
+        assert!(fb()
+            .compose(&src(&"a".repeat(FB_MAX_GRAPHEMES + 1)))
+            .is_err());
     }
 
     #[test]
@@ -453,7 +507,12 @@ mod tests {
         let media = (0..=FB_MAX_IMAGES)
             .map(|i| MediaRef { path: PathBuf::from(format!("img{i}.png")), alt: None, url: None })
             .collect();
-        let post = SourcePost { text: "test".into(), media, hashtags: vec![], platforms: Default::default() };
+        let post = SourcePost {
+            text: "test".into(),
+            media,
+            hashtags: vec![],
+            platforms: Default::default(),
+        };
         assert!(fb().compose(&post).is_err());
     }
 
@@ -472,7 +531,11 @@ mod tests {
     fn fb_compose_no_warning_with_alt() {
         let post = SourcePost {
             text: "test".into(),
-            media: vec![MediaRef { path: PathBuf::from("img.png"), alt: Some("desc".into()), url: None }],
+            media: vec![MediaRef {
+                path: PathBuf::from("img.png"),
+                alt: Some("desc".into()),
+                url: None,
+            }],
             hashtags: vec![],
             platforms: Default::default(),
         };
@@ -581,7 +644,12 @@ mod tests {
                 url: Some(format!("https://example.com/img{i}.png")),
             })
             .collect();
-        let post = SourcePost { text: "test".into(), media, hashtags: vec![], platforms: Default::default() };
+        let post = SourcePost {
+            text: "test".into(),
+            media,
+            hashtags: vec![],
+            platforms: Default::default(),
+        };
         assert!(ig().compose(&post).is_err());
     }
 

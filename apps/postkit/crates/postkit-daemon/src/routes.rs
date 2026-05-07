@@ -1,3 +1,5 @@
+use std::{collections::HashMap, sync::Arc};
+
 use axum::{
     extract::{Path, Query, Request, State},
     http::StatusCode,
@@ -10,8 +12,6 @@ use chrono::{DateTime, Utc};
 use postkit_core::Provider;
 use postkit_store::{ListFilters, ScheduledPost, Store};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::Arc;
 
 pub struct AppState {
     pub store: Store,
@@ -24,7 +24,12 @@ pub fn router(state: Arc<AppState>) -> Router {
     let protected = Router::new()
         .route("/schedule", post(schedule_post))
         .route("/scheduled", get(list_scheduled))
-        .route("/scheduled/{id}", get(get_scheduled).delete(cancel_scheduled).put(update_scheduled))
+        .route(
+            "/scheduled/{id}",
+            get(get_scheduled)
+                .delete(cancel_scheduled)
+                .put(update_scheduled),
+        )
         .route("/scheduled/{id}/retry", post(retry_scheduled))
         .layer(middleware::from_fn_with_state(state.clone(), auth));
 
@@ -84,18 +89,27 @@ async fn schedule_post(
     State(state): State<Arc<AppState>>,
     Json(body): Json<ScheduleBody>,
 ) -> Result<Json<IdResponse>, (StatusCode, String)> {
-    let provider = state
-        .providers
-        .get(&body.account_id)
-        .ok_or_else(|| (StatusCode::BAD_REQUEST, format!("cuenta desconocida: {}", body.account_id)))?;
+    let provider = state.providers.get(&body.account_id).ok_or_else(|| {
+        (StatusCode::BAD_REQUEST, format!("cuenta desconocida: {}", body.account_id))
+    })?;
 
     let provider_str = format!("{:?}", provider.kind()).to_lowercase();
     let source_json = serde_json::to_string(&body.source_post)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let id = match body.scheduled_at {
-        Some(at) => state.store.schedule(&body.account_id, &provider_str, &source_json, at).await,
-        None => state.store.create_draft(&body.account_id, &provider_str, &source_json).await,
+        Some(at) => {
+            state
+                .store
+                .schedule(&body.account_id, &provider_str, &source_json, at)
+                .await
+        }
+        None => {
+            state
+                .store
+                .create_draft(&body.account_id, &provider_str, &source_json)
+                .await
+        }
     }
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -225,15 +239,18 @@ async fn retry_scheduled(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use async_trait::async_trait;
-    use axum::body::{to_bytes, Body};
-    use axum::http::{Request, StatusCode};
+    use axum::{
+        body::{to_bytes, Body},
+        http::{Request, StatusCode},
+    };
     use postkit_core::{
         AccountInfo, Capabilities, PreparedPost, Provider, ProviderKind, PublishResult, SourcePost,
     };
     use postkit_store::Store;
     use tower::ServiceExt;
+
+    use super::*;
 
     struct MockProvider;
 
@@ -242,11 +259,18 @@ mod tests {
         fn kind(&self) -> ProviderKind { ProviderKind::Bluesky }
         fn account_id(&self) -> &str { "test" }
         fn capabilities(&self) -> Capabilities {
-            Capabilities { max_text_graphemes: 300, max_media: 4, supports_threads: false, supports_alt_text: true }
+            Capabilities {
+                max_text_graphemes: 300,
+                max_media: 4,
+                supports_threads: false,
+                supports_alt_text: true,
+            }
         }
         async fn verify(&self) -> anyhow::Result<AccountInfo> { unimplemented!() }
         fn compose(&self, _: &SourcePost) -> anyhow::Result<PreparedPost> { unimplemented!() }
-        async fn execute(&self, _: &PreparedPost) -> anyhow::Result<PublishResult> { unimplemented!() }
+        async fn execute(&self, _: &PreparedPost) -> anyhow::Result<PublishResult> {
+            unimplemented!()
+        }
     }
 
     async fn mem_state(api_key: Option<&str>) -> Arc<AppState> {
@@ -287,7 +311,10 @@ mod tests {
     async fn auth_rejects_wrong_key() {
         let resp = router(mem_state(Some("secret")).await)
             .oneshot(
-                Request::get("/scheduled").header("X-Api-Key", "wrong").body(Body::empty()).unwrap(),
+                Request::get("/scheduled")
+                    .header("X-Api-Key", "wrong")
+                    .body(Body::empty())
+                    .unwrap(),
             )
             .await
             .unwrap();
@@ -331,7 +358,11 @@ mod tests {
     #[tokio::test]
     async fn cancel_not_found() {
         let resp = router(mem_state(None).await)
-            .oneshot(Request::delete("/scheduled/999").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::delete("/scheduled/999")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -340,7 +371,11 @@ mod tests {
     #[tokio::test]
     async fn retry_not_found() {
         let resp = router(mem_state(None).await)
-            .oneshot(Request::post("/scheduled/999/retry").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::post("/scheduled/999/retry")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);

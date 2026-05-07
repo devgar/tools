@@ -1,0 +1,14 @@
+edition = "2021"
+max_width = 100
+newline_style = "Unix"
+use_small_heuristics = "Max"
+chain_width = 60
+reorder_imports = true
+reorder_modules = true
+
+# Nightly-only
+unstable_features = true
+fn_single_line = true
+trailing_comma = "Vertical"
+imports_granularity = "Crate"
+group_imports = "StdExternalCrate"

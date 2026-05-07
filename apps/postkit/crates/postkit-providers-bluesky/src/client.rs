@@ -3,10 +3,11 @@
 //! Encapsula todo el protocolo XRPC: construcción de URLs, gestión de sesión,
 //! TTL del JWT, y todas las llamadas HTTP. `lib.rs` solo toca tipos de negocio.
 
+use std::sync::Arc;
+
 use reqwest::Client;
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::{json, Value};
-use std::sync::Arc;
 use tokio::sync::RwLock;
 
 const PDS: &str = "https://bsky.social";
@@ -58,12 +59,7 @@ pub(crate) struct BskyClient {
 
 impl BskyClient {
     pub(crate) fn new(handle: String, password: String) -> Self {
-        Self {
-            http: Client::new(),
-            session: Arc::new(RwLock::new(None)),
-            handle,
-            password,
-        }
+        Self { http: Client::new(), session: Arc::new(RwLock::new(None)), handle, password }
     }
 
     // ─── XRPC genéricos ───────────────────────────────────────────────────────
@@ -145,7 +141,9 @@ impl BskyClient {
     /// Usa HTTP directo (no JSON body), por eso no pasa por xrpc_post.
     pub(crate) async fn upload_blob(&self, bytes: Vec<u8>, mime: &str) -> anyhow::Result<Value> {
         #[derive(Deserialize)]
-        struct Res { blob: Value }
+        struct Res {
+            blob: Value,
+        }
         let s = self.ensure_session().await?;
         let res: Res = self
             .http
@@ -164,14 +162,12 @@ impl BskyClient {
     /// Resuelve @handle → DID via com.atproto.identity.resolveHandle.
     pub(crate) async fn resolve_handle(&self, handle: &str) -> anyhow::Result<String> {
         #[derive(Deserialize)]
-        struct Res { did: String }
+        struct Res {
+            did: String,
+        }
         let s = self.ensure_session().await?;
         let res: Res = self
-            .xrpc_get(
-                "com.atproto.identity.resolveHandle",
-                &s.access_jwt,
-                &[("handle", handle)],
-            )
+            .xrpc_get("com.atproto.identity.resolveHandle", &s.access_jwt, &[("handle", handle)])
             .await?;
         Ok(res.did)
     }
@@ -179,14 +175,24 @@ impl BskyClient {
     /// Reemplaza en-sitio los facets `_pending_mention` con menciones AT resueltas.
     /// Los handles no resolubles se descartan silenciosamente.
     pub(crate) async fn resolve_mentions(&self, facets: &mut Value) {
-        let Some(arr) = facets.as_array_mut() else { return };
+        let Some(arr) = facets.as_array_mut() else {
+            return;
+        };
         for facet in arr.iter_mut() {
-            let Some(features) = facet["features"].as_array_mut() else { continue };
+            let Some(features) = facet["features"].as_array_mut() else {
+                continue;
+            };
             for feature in features.iter_mut() {
-                if feature["$type"] != "_pending_mention" { continue; }
-                let Some(handle) = feature["handle"].as_str() else { continue };
+                if feature["$type"] != "_pending_mention" {
+                    continue;
+                }
+                let Some(handle) = feature["handle"].as_str() else {
+                    continue;
+                };
                 let handle = handle.to_string();
-                let Ok(did) = self.resolve_handle(&handle).await else { continue };
+                let Ok(did) = self.resolve_handle(&handle).await else {
+                    continue;
+                };
                 *feature = json!({ "$type": "app.bsky.richtext.facet#mention", "did": did });
             }
         }
