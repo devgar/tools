@@ -19,8 +19,17 @@ pub struct Config {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "provider", rename_all = "snake_case")]
 pub enum AppConfig {
-    X { api_key: String, api_secret: String },
-    Meta,
+    X {
+        api_key: String,
+        api_secret: String,
+    },
+    #[allow(dead_code)]
+    Meta {
+        #[serde(default)]
+        app_id: Option<String>,
+        #[serde(default)]
+        app_secret: Option<String>,
+    },
 }
 
 // ─── Account credentials ──────────────────────────────────────────────────────

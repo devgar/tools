@@ -33,8 +33,17 @@ impl DaemonConfig {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "provider", rename_all = "snake_case")]
 pub enum AppConfig {
-    X { api_key: String, api_secret: String },
-    Meta,
+    X {
+        api_key: String,
+        api_secret: String,
+    },
+    Meta {
+        /// App ID y secret de Meta (opcionales; necesarios para rotation de tokens de usuario).
+        #[serde(default)]
+        app_id: Option<String>,
+        #[serde(default)]
+        app_secret: Option<String>,
+    },
 }
 
 // ─── Account credentials (por cuenta) ────────────────────────────────────────

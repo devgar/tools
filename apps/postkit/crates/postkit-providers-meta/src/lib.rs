@@ -1,18 +1,25 @@
 //! Meta Graph API providers: Facebook Pages and Instagram.
 //!
 //! Auth: long-lived Page Access Token / User Access Token (Bearer).
-//! API base: https://graph.facebook.com/v19.0
+//! API base: https://graph.facebook.com/v25.0
 //!
 //! Facebook Page: binary photo upload + feed post.
 //! Instagram: URL-based media containers (requires public URL in MediaRef.url) + two-step publish.
+//!
+//! Token rotation (opt-in): si `with_app_credentials(app_id, app_secret)` está configurado,
+//! `ensure_fresh_token()` intercambia el token vía `fb_exchange_token` y persiste el resultado
+//! en el `TokenSink` proporcionado. El daemon llama a esto al arrancar y periódicamente.
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use postkit_core::{
     AccountInfo, Capabilities, PreparedPost, Provider, ProviderKind, PublishResult, SourcePost,
-    Step,
+    Step, TokenSet, TokenSink,
 };
 use reqwest::Client;
 use serde_json::{json, Value};
+use tokio::sync::RwLock;
 use unicode_segmentation::UnicodeSegmentation;
 
 const GRAPH: &str = "https://graph.facebook.com/v25.0";
@@ -20,27 +27,118 @@ const FB_MAX_GRAPHEMES: usize = 63_206;
 const FB_MAX_IMAGES: usize = 10;
 const IG_MAX_GRAPHEMES: usize = 2_200;
 const IG_MAX_IMAGES: usize = 10;
+/// Tiempo asumido de validez tras un `fb_exchange_token` (Meta no devuelve expires_in aquí).
+const META_TOKEN_TTL_SECS: i64 = 60 * 24 * 3600; // 60 días
+
+// ─── Funciones auxiliares compartidas ────────────────────────────────────────
+
+/// Devuelve `true` si el error proviene de un token OAuth caducado o inválido.
+/// Meta devuelve HTTP 400/401 con `{"error":{"type":"OAuthException",...}}`.
+fn is_oauth_err(e: &anyhow::Error) -> bool {
+    if let Some(re) = e.downcast_ref::<reqwest::Error>() {
+        if re
+            .status()
+            .map_or(false, |s| s == reqwest::StatusCode::UNAUTHORIZED || s.as_u16() == 400)
+        {
+            return true;
+        }
+    }
+    let msg = e.to_string();
+    msg.contains("OAuthException") || msg.contains("Invalid OAuth")
+}
+
+/// Intercambia un token por uno de larga duración via `fb_exchange_token`.
+async fn exchange_token(
+    http: &Client,
+    app_id: &str,
+    app_secret: &str,
+    current_token: &str,
+) -> anyhow::Result<String> {
+    #[derive(serde::Deserialize)]
+    struct Res {
+        access_token: String,
+    }
+    let res: Res = http
+        .get(format!("{GRAPH}/oauth/access_token"))
+        .query(&[
+            ("grant_type", "fb_exchange_token"),
+            ("client_id", app_id),
+            ("client_secret", app_secret),
+            ("fb_exchange_token", current_token),
+        ])
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    Ok(res.access_token)
+}
 
 // ─── Facebook Page ────────────────────────────────────────────────────────────
 
 pub struct FacebookPage {
     account_id: String,
     page_id: String,
-    page_access_token: String,
+    token: Arc<RwLock<String>>,
+    /// (app_id, app_secret) necesario para rotation de tokens de usuario.
+    app_credentials: Option<(String, String)>,
+    token_sink: Option<Arc<dyn TokenSink>>,
     http: Client,
 }
 
 impl FacebookPage {
     pub fn new(account_id: String, page_id: String, page_access_token: String) -> Self {
-        Self { account_id, page_id, page_access_token, http: Client::new() }
+        Self {
+            account_id,
+            page_id,
+            token: Arc::new(RwLock::new(page_access_token)),
+            app_credentials: None,
+            token_sink: None,
+            http: Client::new(),
+        }
+    }
+
+    pub fn with_app_credentials(mut self, app_id: String, app_secret: String) -> Self {
+        self.app_credentials = Some((app_id, app_secret));
+        self
+    }
+
+    pub fn with_token_sink(mut self, sink: Arc<dyn TokenSink>) -> Self {
+        self.token_sink = Some(sink);
+        self
+    }
+
+    /// Intercambia el token por uno de larga duración y persiste el resultado.
+    /// Devuelve `true` si el token fue renovado; `false` si no hay `app_credentials`.
+    pub async fn ensure_fresh_token(&self) -> anyhow::Result<bool> {
+        let Some((ref app_id, ref app_secret)) = self.app_credentials else {
+            return Ok(false);
+        };
+        let current = self.token.read().await.clone();
+        let new_token = exchange_token(&self.http, app_id, app_secret, &current).await?;
+        *self.token.write().await = new_token.clone();
+        if let Some(ref sink) = self.token_sink {
+            let _ = sink
+                .save(
+                    &self.account_id,
+                    &TokenSet {
+                        access_token: new_token,
+                        refresh_token: None,
+                        expires_at: Some(chrono::Utc::now().timestamp() + META_TOKEN_TTL_SECS),
+                    },
+                )
+                .await;
+        }
+        Ok(true)
     }
 
     async fn upload_photo(&self, bytes: Vec<u8>) -> anyhow::Result<String> {
+        let token = self.token.read().await.clone();
         let url = format!("{GRAPH}/{}/photos", self.page_id);
         let part = reqwest::multipart::Part::bytes(bytes).file_name("photo.jpg");
         let form = reqwest::multipart::Form::new()
             .text("published", "false")
-            .text("access_token", self.page_access_token.clone())
+            .text("access_token", token)
             .part("source", part);
         let res: Value = self
             .http
@@ -55,6 +153,56 @@ impl FacebookPage {
             .as_str()
             .map(str::to_string)
             .ok_or_else(|| anyhow::anyhow!("Facebook upload: missing id in response"))
+    }
+
+    async fn execute_inner(&self, prepared: &PreparedPost) -> anyhow::Result<PublishResult> {
+        let token = self.token.read().await.clone();
+        let mut media_fbids: Vec<String> = Vec::new();
+        let mut post_text = String::new();
+        let mut post_media_refs: Vec<String> = Vec::new();
+
+        for step in &prepared.steps {
+            match step {
+                Step::UploadMedia { path, .. } => {
+                    let bytes = tokio::fs::read(path).await?;
+                    let id = self.upload_photo(bytes).await?;
+                    media_fbids.push(id);
+                }
+                Step::CreatePost { text, media_refs, .. } => {
+                    post_text = text.clone();
+                    post_media_refs = media_refs.clone();
+                }
+                Step::ThreadContinue { .. } => {}
+            }
+        }
+
+        let mut body = json!({ "message": post_text, "access_token": token });
+        if !post_media_refs.is_empty() {
+            let attached: Vec<Value> = media_fbids
+                .iter()
+                .map(|id| json!({ "media_fbid": id }))
+                .collect();
+            body["attached_media"] = json!(attached);
+        }
+
+        let res: Value = self
+            .http
+            .post(format!("{GRAPH}/{}/feed", self.page_id))
+            .json(&body)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+
+        let id = res["id"].as_str().unwrap_or("").to_string();
+        let parts: Vec<&str> = id.splitn(2, '_').collect();
+        let post_url = if parts.len() == 2 {
+            Some(format!("https://www.facebook.com/{}/posts/{}", parts[0], parts[1]))
+        } else {
+            None
+        };
+        Ok(PublishResult { post_url, platform_id: id, raw: res })
     }
 }
 
@@ -72,10 +220,11 @@ impl Provider for FacebookPage {
     }
 
     async fn verify(&self) -> anyhow::Result<AccountInfo> {
+        let token = self.token.read().await.clone();
         let body: serde_json::Value = self
             .http
             .get(format!("{GRAPH}/{}", self.page_id))
-            .query(&[("fields", "name,username"), ("access_token", &self.page_access_token)])
+            .query(&[("fields", "name,username"), ("access_token", &token)])
             .send()
             .await?
             .error_for_status()?
@@ -148,53 +297,15 @@ impl Provider for FacebookPage {
     }
 
     async fn execute(&self, prepared: &PreparedPost) -> anyhow::Result<PublishResult> {
-        let mut media_fbids: Vec<String> = Vec::new();
-        let mut post_text = String::new();
-        let mut post_media_refs: Vec<String> = Vec::new();
-
-        for step in &prepared.steps {
-            match step {
-                Step::UploadMedia { path, .. } => {
-                    let bytes = tokio::fs::read(path).await?;
-                    let id = self.upload_photo(bytes).await?;
-                    media_fbids.push(id);
+        match self.execute_inner(prepared).await {
+            Err(e) if is_oauth_err(&e) && self.app_credentials.is_some() => {
+                match self.ensure_fresh_token().await {
+                    Ok(true) => self.execute_inner(prepared).await,
+                    _ => Err(e),
                 }
-                Step::CreatePost { text, media_refs, .. } => {
-                    post_text = text.clone();
-                    post_media_refs = media_refs.clone();
-                }
-                Step::ThreadContinue { .. } => {}
             }
+            other => other,
         }
-
-        let mut body = json!({ "message": post_text, "access_token": self.page_access_token });
-        if !post_media_refs.is_empty() {
-            let attached: Vec<Value> = media_fbids
-                .iter()
-                .map(|id| json!({ "media_fbid": id }))
-                .collect();
-            body["attached_media"] = json!(attached);
-        }
-
-        let res: Value = self
-            .http
-            .post(format!("{GRAPH}/{}/feed", self.page_id))
-            .json(&body)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
-
-        let id = res["id"].as_str().unwrap_or("").to_string();
-        let parts: Vec<&str> = id.splitn(2, '_').collect();
-        let post_url = if parts.len() == 2 {
-            Some(format!("https://www.facebook.com/{}/posts/{}", parts[0], parts[1]))
-        } else {
-            None
-        };
-
-        Ok(PublishResult { post_url, platform_id: id, raw: res })
     }
 }
 
@@ -203,13 +314,57 @@ impl Provider for FacebookPage {
 pub struct Instagram {
     account_id: String,
     ig_user_id: String,
-    access_token: String,
+    token: Arc<RwLock<String>>,
+    /// (app_id, app_secret) necesario para rotation de tokens de usuario.
+    app_credentials: Option<(String, String)>,
+    token_sink: Option<Arc<dyn TokenSink>>,
     http: Client,
 }
 
 impl Instagram {
     pub fn new(account_id: String, ig_user_id: String, access_token: String) -> Self {
-        Self { account_id, ig_user_id, access_token, http: Client::new() }
+        Self {
+            account_id,
+            ig_user_id,
+            token: Arc::new(RwLock::new(access_token)),
+            app_credentials: None,
+            token_sink: None,
+            http: Client::new(),
+        }
+    }
+
+    pub fn with_app_credentials(mut self, app_id: String, app_secret: String) -> Self {
+        self.app_credentials = Some((app_id, app_secret));
+        self
+    }
+
+    pub fn with_token_sink(mut self, sink: Arc<dyn TokenSink>) -> Self {
+        self.token_sink = Some(sink);
+        self
+    }
+
+    /// Intercambia el token por uno de larga duración y persiste el resultado.
+    /// Devuelve `true` si el token fue renovado; `false` si no hay `app_credentials`.
+    pub async fn ensure_fresh_token(&self) -> anyhow::Result<bool> {
+        let Some((ref app_id, ref app_secret)) = self.app_credentials else {
+            return Ok(false);
+        };
+        let current = self.token.read().await.clone();
+        let new_token = exchange_token(&self.http, app_id, app_secret, &current).await?;
+        *self.token.write().await = new_token.clone();
+        if let Some(ref sink) = self.token_sink {
+            let _ = sink
+                .save(
+                    &self.account_id,
+                    &TokenSet {
+                        access_token: new_token,
+                        refresh_token: None,
+                        expires_at: Some(chrono::Utc::now().timestamp() + META_TOKEN_TTL_SECS),
+                    },
+                )
+                .await;
+        }
+        Ok(true)
     }
 
     async fn create_container(
@@ -218,8 +373,8 @@ impl Instagram {
         caption: Option<&str>,
         carousel_item: bool,
     ) -> anyhow::Result<String> {
-        let mut params =
-            vec![("image_url", image_url.to_string()), ("access_token", self.access_token.clone())];
+        let token = self.token.read().await.clone();
+        let mut params = vec![("image_url", image_url.to_string()), ("access_token", token)];
         if carousel_item {
             params.push(("is_carousel_item", "true".to_string()));
         } else if let Some(cap) = caption {
@@ -245,6 +400,7 @@ impl Instagram {
         children: &[String],
         caption: &str,
     ) -> anyhow::Result<String> {
+        let token = self.token.read().await.clone();
         let children_str = children.join(",");
         let res: Value = self
             .http
@@ -253,7 +409,7 @@ impl Instagram {
                 ("media_type", "CAROUSEL"),
                 ("children", &children_str),
                 ("caption", caption),
-                ("access_token", &self.access_token),
+                ("access_token", &token),
             ])
             .send()
             .await?
@@ -267,10 +423,11 @@ impl Instagram {
     }
 
     async fn publish_container(&self, creation_id: &str) -> anyhow::Result<String> {
+        let token = self.token.read().await.clone();
         let res: Value = self
             .http
             .post(format!("{GRAPH}/{}/media_publish", self.ig_user_id))
-            .form(&[("creation_id", creation_id), ("access_token", &self.access_token)])
+            .form(&[("creation_id", creation_id), ("access_token", &token)])
             .send()
             .await?
             .error_for_status()?
@@ -280,6 +437,53 @@ impl Instagram {
             .as_str()
             .map(str::to_string)
             .ok_or_else(|| anyhow::anyhow!("Instagram media_publish: missing id"))
+    }
+
+    async fn execute_inner(&self, prepared: &PreparedPost) -> anyhow::Result<PublishResult> {
+        let Step::CreatePost { text, facets, media_refs } = prepared
+            .steps
+            .iter()
+            .find(|s| matches!(s, Step::CreatePost { .. }))
+            .ok_or_else(|| anyhow::anyhow!("Instagram execute: no CreatePost step"))?
+        else {
+            unreachable!()
+        };
+
+        let url_map: std::collections::HashMap<String, String> = facets
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .filter_map(|e| {
+                let ref_id = e["ref_id"].as_str()?.to_string();
+                let url = e["url"].as_str()?.to_string();
+                Some((ref_id, url))
+            })
+            .collect();
+
+        let media_id = if media_refs.len() == 1 {
+            let url = url_map
+                .get(&media_refs[0])
+                .ok_or_else(|| anyhow::anyhow!("Instagram: URL no encontrada para img0"))?;
+            let creation_id = self.create_container(url, Some(text), false).await?;
+            self.publish_container(&creation_id).await?
+        } else {
+            let mut children = Vec::new();
+            for ref_id in media_refs {
+                let url = url_map
+                    .get(ref_id)
+                    .ok_or_else(|| anyhow::anyhow!("Instagram: URL no encontrada para {ref_id}"))?;
+                let id = self.create_container(url, None, true).await?;
+                children.push(id);
+            }
+            let carousel_id = self.create_carousel_container(&children, text).await?;
+            self.publish_container(&carousel_id).await?
+        };
+
+        Ok(PublishResult {
+            post_url: None,
+            platform_id: media_id.clone(),
+            raw: json!({ "id": media_id }),
+        })
     }
 }
 
@@ -297,10 +501,11 @@ impl Provider for Instagram {
     }
 
     async fn verify(&self) -> anyhow::Result<AccountInfo> {
+        let token = self.token.read().await.clone();
         let body: serde_json::Value = self
             .http
             .get(format!("{GRAPH}/{}", self.ig_user_id))
-            .query(&[("fields", "name,username"), ("access_token", &self.access_token)])
+            .query(&[("fields", "name,username"), ("access_token", &token)])
             .send()
             .await?
             .json()
@@ -341,7 +546,6 @@ impl Provider for Instagram {
                 post.media.len()
             );
         }
-        // All media items must have a public URL
         for (i, m) in post.media.iter().enumerate() {
             if m.url.is_none() {
                 anyhow::bail!("Instagram: imagen {i} no tiene URL pública (campo `url` requerido)");
@@ -356,7 +560,6 @@ impl Provider for Instagram {
         }
         let mut warnings = Vec::new();
         let mut media_refs: Vec<String> = Vec::new();
-        // Encode image URLs in facets as a JSON array for execute() to consume
         let mut url_entries: Vec<Value> = Vec::new();
         for (i, m) in post.media.iter().enumerate() {
             let ref_id = format!("img{i}");
@@ -376,52 +579,43 @@ impl Provider for Instagram {
     }
 
     async fn execute(&self, prepared: &PreparedPost) -> anyhow::Result<PublishResult> {
-        let Step::CreatePost { text, facets, media_refs } = prepared
-            .steps
-            .iter()
-            .find(|s| matches!(s, Step::CreatePost { .. }))
-            .ok_or_else(|| anyhow::anyhow!("Instagram execute: no CreatePost step"))?
-        else {
-            unreachable!()
-        };
-
-        // Resolve ref_id → URL from facets array
-        let url_map: std::collections::HashMap<String, String> = facets
-            .as_array()
-            .unwrap_or(&vec![])
-            .iter()
-            .filter_map(|e| {
-                let ref_id = e["ref_id"].as_str()?.to_string();
-                let url = e["url"].as_str()?.to_string();
-                Some((ref_id, url))
-            })
-            .collect();
-
-        let media_id = if media_refs.len() == 1 {
-            let url = url_map
-                .get(&media_refs[0])
-                .ok_or_else(|| anyhow::anyhow!("Instagram: URL no encontrada para img0"))?;
-            let creation_id = self.create_container(url, Some(text), false).await?;
-            self.publish_container(&creation_id).await?
-        } else {
-            // Carousel
-            let mut children = Vec::new();
-            for ref_id in media_refs {
-                let url = url_map
-                    .get(ref_id)
-                    .ok_or_else(|| anyhow::anyhow!("Instagram: URL no encontrada para {ref_id}"))?;
-                let id = self.create_container(url, None, true).await?;
-                children.push(id);
+        match self.execute_inner(prepared).await {
+            Err(e) if is_oauth_err(&e) && self.app_credentials.is_some() => {
+                match self.ensure_fresh_token().await {
+                    Ok(true) => self.execute_inner(prepared).await,
+                    _ => Err(e),
+                }
             }
-            let carousel_id = self.create_carousel_container(&children, text).await?;
-            self.publish_container(&carousel_id).await?
-        };
+            other => other,
+        }
+    }
+}
 
-        Ok(PublishResult {
-            post_url: None, // shortcode requires an extra API call
-            platform_id: media_id.clone(),
-            raw: json!({ "id": media_id }),
-        })
+// ─── MetaProvider trait ───────────────────────────────────────────────────────
+
+#[async_trait]
+pub trait MetaProvider: postkit_core::Provider + 'static {
+    fn with_app_credentials(self, app_id: String, app_secret: String) -> Self;
+    async fn ensure_fresh_token(&self) -> anyhow::Result<bool>;
+}
+
+#[async_trait]
+impl MetaProvider for FacebookPage {
+    fn with_app_credentials(self, app_id: String, app_secret: String) -> Self {
+        FacebookPage::with_app_credentials(self, app_id, app_secret)
+    }
+    async fn ensure_fresh_token(&self) -> anyhow::Result<bool> {
+        FacebookPage::ensure_fresh_token(self).await
+    }
+}
+
+#[async_trait]
+impl MetaProvider for Instagram {
+    fn with_app_credentials(self, app_id: String, app_secret: String) -> Self {
+        Instagram::with_app_credentials(self, app_id, app_secret)
+    }
+    async fn ensure_fresh_token(&self) -> anyhow::Result<bool> {
+        Instagram::ensure_fresh_token(self).await
     }
 }
 

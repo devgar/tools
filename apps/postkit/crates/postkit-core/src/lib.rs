@@ -189,6 +189,24 @@ mod tests {
     }
 }
 
+// ─── Token persistence ───────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct TokenSet {
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+    /// Expiración del access_token en Unix epoch (segundos). None = desconocida.
+    pub expires_at: Option<i64>,
+}
+
+/// Interfaz mínima para persistir y recuperar tokens renovados fuera de los providers.
+/// Implementada por `postkit-store`; los providers solo la llaman, no dependen de la store.
+#[async_trait]
+pub trait TokenSink: Send + Sync {
+    async fn load(&self, account_id: &str) -> anyhow::Result<Option<TokenSet>>;
+    async fn save(&self, account_id: &str, tokens: &TokenSet) -> anyhow::Result<()>;
+}
+
 // ─── El trait principal ──────────────────────────────────────────────────────
 
 #[async_trait]

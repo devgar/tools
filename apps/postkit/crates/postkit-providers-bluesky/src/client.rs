@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use postkit_core::{TokenSet, TokenSink};
 use reqwest::Client;
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::{json, Value};
@@ -12,6 +13,8 @@ use tokio::sync::RwLock;
 
 const PDS: &str = "https://bsky.social";
 const ACCESS_JWT_TTL: std::time::Duration = std::time::Duration::from_secs(45 * 60);
+/// TTL conservador del refresh JWT de Bluesky (~90 días reales; usamos 80 para margen).
+const REFRESH_JWT_TTL_SECS: i64 = 80 * 24 * 3600;
 
 #[derive(Deserialize)]
 struct SessionResponse {
@@ -53,13 +56,43 @@ pub(crate) struct CreateRecordResult {
 pub(crate) struct BskyClient {
     http: Client,
     session: Arc<RwLock<Option<Session>>>,
+    account_id: String,
     handle: String,
     password: String,
+    token_sink: Option<Arc<dyn TokenSink>>,
 }
 
 impl BskyClient {
-    pub(crate) fn new(handle: String, password: String) -> Self {
-        Self { http: Client::new(), session: Arc::new(RwLock::new(None)), handle, password }
+    pub(crate) fn new(account_id: String, handle: String, password: String) -> Self {
+        Self {
+            http: Client::new(),
+            session: Arc::new(RwLock::new(None)),
+            account_id,
+            handle,
+            password,
+            token_sink: None,
+        }
+    }
+
+    pub(crate) fn with_token_sink(mut self, sink: Arc<dyn TokenSink>) -> Self {
+        self.token_sink = Some(sink);
+        self
+    }
+
+    /// Persiste access_jwt + refresh_jwt tras createSession/refreshSession.
+    fn persist_session(&self, session: &Session) {
+        if let Some(ref sink) = self.token_sink {
+            let sink = sink.clone();
+            let account_id = self.account_id.clone();
+            let tokens = TokenSet {
+                access_token: session.access_jwt.clone(),
+                refresh_token: Some(session.refresh_jwt.clone()),
+                expires_at: Some(chrono::Utc::now().timestamp() + REFRESH_JWT_TTL_SECS),
+            };
+            tokio::spawn(async move {
+                let _ = sink.save(&account_id, &tokens).await;
+            });
+        }
     }
 
     // ─── XRPC genéricos ───────────────────────────────────────────────────────
@@ -119,8 +152,38 @@ impl BskyClient {
                 .xrpc_post("com.atproto.server.refreshSession", Some(&s.refresh_jwt.clone()), None)
                 .await?;
             let session = Session::from(res);
+            self.persist_session(&session);
             *guard = Some(session.clone());
             return Ok(session);
+        }
+
+        // Sin sesión en memoria: intentar con el refresh_jwt guardado en sink.
+        if let Some(ref sink) = self.token_sink {
+            if let Ok(Some(stored)) = sink.load(&self.account_id).await {
+                if let Some(ref refresh_jwt) = stored.refresh_token {
+                    match self
+                        .xrpc_post::<SessionResponse>(
+                            "com.atproto.server.refreshSession",
+                            Some(refresh_jwt),
+                            None,
+                        )
+                        .await
+                    {
+                        Ok(res) => {
+                            let session = Session::from(res);
+                            self.persist_session(&session);
+                            *guard = Some(session.clone());
+                            return Ok(session);
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                account_id = %self.account_id,
+                                "refresh_jwt guardado caducado, re-autenticando: {e}"
+                            );
+                        }
+                    }
+                }
+            }
         }
 
         let res: SessionResponse = self
@@ -131,6 +194,7 @@ impl BskyClient {
             )
             .await?;
         let session = Session::from(res);
+        self.persist_session(&session);
         *guard = Some(session.clone());
         Ok(session)
     }

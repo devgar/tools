@@ -1442,6 +1442,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
  "unicode-segmentation",
 ]
 
@@ -1451,6 +1452,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "postkit-core",
  "reqwest",
  "serde",
@@ -1483,7 +1485,9 @@ name = "postkit-store"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
+ "postkit-core",
  "serde",
  "serde_json",
  "sqlx",

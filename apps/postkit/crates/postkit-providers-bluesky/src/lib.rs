@@ -13,7 +13,12 @@ pub struct Bluesky {
 
 impl Bluesky {
     pub fn new(account_id: String, handle: String, app_password: String) -> Self {
-        Self { account_id, client: BskyClient::new(handle, app_password) }
+        Self { client: BskyClient::new(account_id.clone(), handle, app_password), account_id }
+    }
+
+    pub fn with_token_sink(mut self, sink: std::sync::Arc<dyn TokenSink>) -> Self {
+        self.client = self.client.with_token_sink(sink);
+        self
     }
 }
 

@@ -1,4 +1,5 @@
 use chrono::{DateTime, TimeZone, Utc};
+use postkit_core::{TokenSet, TokenSink};
 use serde::{Deserialize, Serialize};
 use sqlx::{Row as _, SqlitePool};
 
@@ -318,6 +319,62 @@ impl Store {
         .rows_affected();
         Ok(n > 0)
     }
+
+    // ─── Credentials ─────────────────────────────────────────────────────────
+
+    pub async fn load_credential(&self, account_id: &str) -> anyhow::Result<Option<TokenSet>> {
+        let row = sqlx::query_as::<_, CredentialRow>(
+            "SELECT access_token, refresh_token, expires_at FROM credentials WHERE account_id = ?",
+        )
+        .bind(account_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| TokenSet {
+            access_token: r.access_token,
+            refresh_token: r.refresh_token,
+            expires_at: r.expires_at,
+        }))
+    }
+
+    pub async fn save_credential(&self, account_id: &str, tokens: &TokenSet) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO credentials (account_id, access_token, refresh_token, expires_at) \
+             VALUES (?, ?, ?, ?) \
+             ON CONFLICT(account_id) DO UPDATE SET \
+               access_token  = excluded.access_token, \
+               refresh_token = excluded.refresh_token, \
+               expires_at    = excluded.expires_at, \
+               updated_at    = unixepoch()",
+        )
+        .bind(account_id)
+        .bind(&tokens.access_token)
+        .bind(&tokens.refresh_token)
+        .bind(tokens.expires_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct CredentialRow {
+    access_token: String,
+    refresh_token: Option<String>,
+    expires_at: Option<i64>,
+}
+
+#[async_trait::async_trait]
+impl TokenSink for Store {
+    async fn load(&self, account_id: &str) -> anyhow::Result<Option<TokenSet>> {
+        self.load_credential(account_id).await
+    }
+
+    async fn save(&self, account_id: &str, tokens: &TokenSet) -> anyhow::Result<()> {
+        if let Err(e) = self.save_credential(account_id, tokens).await {
+            tracing::warn!(account_id, "error guardando credentials: {e}");
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -609,5 +666,73 @@ mod tests {
         assert!(s.cancel(id).await.unwrap());
         let post = s.get_by_id(id).await.unwrap().unwrap();
         assert_eq!(post.status, "cancelled");
+    }
+
+    // ─── Credentials ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn save_and_load_credential() {
+        let s = mem_store().await;
+        let tokens = TokenSet {
+            access_token: "access123".into(),
+            refresh_token: Some("refresh456".into()),
+            expires_at: Some(9_999_999_999),
+        };
+        s.save_credential("acc1", &tokens).await.unwrap();
+        let loaded = s.load_credential("acc1").await.unwrap().unwrap();
+        assert_eq!(loaded.access_token, "access123");
+        assert_eq!(loaded.refresh_token.as_deref(), Some("refresh456"));
+        assert_eq!(loaded.expires_at, Some(9_999_999_999));
+    }
+
+    #[tokio::test]
+    async fn load_credential_returns_none_when_missing() {
+        let s = mem_store().await;
+        assert!(s.load_credential("nonexistent").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn save_credential_upserts() {
+        let s = mem_store().await;
+        let t1 = TokenSet { access_token: "v1".into(), refresh_token: None, expires_at: None };
+        s.save_credential("acc1", &t1).await.unwrap();
+
+        let t2 = TokenSet {
+            access_token: "v2".into(),
+            refresh_token: Some("r2".into()),
+            expires_at: Some(1000),
+        };
+        s.save_credential("acc1", &t2).await.unwrap();
+
+        let loaded = s.load_credential("acc1").await.unwrap().unwrap();
+        assert_eq!(loaded.access_token, "v2");
+        assert_eq!(loaded.refresh_token.as_deref(), Some("r2"));
+        assert_eq!(loaded.expires_at, Some(1000));
+    }
+
+    #[tokio::test]
+    async fn save_credential_without_refresh_token() {
+        let s = mem_store().await;
+        let tokens = TokenSet { access_token: "tok".into(), refresh_token: None, expires_at: None };
+        s.save_credential("acc1", &tokens).await.unwrap();
+        let loaded = s.load_credential("acc1").await.unwrap().unwrap();
+        assert_eq!(loaded.access_token, "tok");
+        assert!(loaded.refresh_token.is_none());
+        assert!(loaded.expires_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn token_sink_impl_save_and_load() {
+        let s = mem_store().await;
+        let sink: &dyn TokenSink = &s;
+        let tokens = TokenSet {
+            access_token: "a".into(),
+            refresh_token: Some("r".into()),
+            expires_at: Some(42),
+        };
+        sink.save("acc1", &tokens).await.unwrap();
+        let loaded = sink.load("acc1").await.unwrap().unwrap();
+        assert_eq!(loaded.access_token, "a");
+        assert_eq!(loaded.refresh_token.as_deref(), Some("r"));
     }
 }
