@@ -1,0 +1,12 @@
+---
+source: crates/postkit-providers-x/src/lib.rs
+expression: "&result.steps"
+---
+[
+  {
+    "kind": "create_post",
+    "text": "Hello world\n\n#rust #dev",
+    "facets": [],
+    "media_refs": []
+  }
+]

@@ -1,0 +1,20 @@
+---
+source: crates/postkit-providers-x/src/lib.rs
+expression: "&result.steps"
+---
+[
+  {
+    "kind": "upload_media",
+    "path": "photo.jpg",
+    "alt": "a photo",
+    "ref_id": "img0"
+  },
+  {
+    "kind": "create_post",
+    "text": "Check this out",
+    "facets": [],
+    "media_refs": [
+      "img0"
+    ]
+  }
+]

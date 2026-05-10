@@ -16,3 +16,6 @@ chrono = { version = "0.4" }
 regex = "1"
 tracing = "0.1"
 unicode-segmentation = "1"
+
+[dev-dependencies]
+insta = { workspace = true }

@@ -284,4 +284,37 @@ mod tests {
         assert!(matches!(result.steps[1], Step::UploadMedia { .. }));
         assert!(matches!(result.steps[2], Step::CreatePost { .. }));
     }
+
+    // ── Snapshot tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn snap_facets_url_hashtag_mention() {
+        let result = provider()
+            .compose(&src("Visit https://rust-lang.org, tag #rust, mention @alice.bsky.social!"))
+            .unwrap();
+        insta::assert_json_snapshot!(&result.steps[0]);
+    }
+
+    #[test]
+    fn snap_thread_split() {
+        let text = format!("{} {}", "a".repeat(280), "b".repeat(100));
+        let result = provider().compose(&src(&text)).unwrap();
+        insta::assert_json_snapshot!(&result.steps);
+    }
+
+    #[test]
+    fn snap_media_with_alt() {
+        let source = SourcePost {
+            text: "Look at this".into(),
+            media: vec![MediaRef {
+                path: PathBuf::from("photo.jpg"),
+                alt: Some("a ferris crab".into()),
+                url: None,
+            }],
+            hashtags: vec!["rust".into()],
+            platforms: Default::default(),
+        };
+        let result = provider().compose(&source).unwrap();
+        insta::assert_json_snapshot!(&result.steps);
+    }
 }

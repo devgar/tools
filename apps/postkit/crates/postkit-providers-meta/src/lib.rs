@@ -482,8 +482,24 @@ impl Instagram {
             self.publish_container(&carousel_id).await?
         };
 
+        let token = self.token.read().await.clone();
+        let post_url = async {
+            let body: Value = self
+                .http
+                .get(format!("{GRAPH}/{media_id}"))
+                .query(&[("fields", "permalink"), ("access_token", token.as_str())])
+                .send()
+                .await
+                .ok()?
+                .json()
+                .await
+                .ok()?;
+            body["permalink"].as_str().map(String::from)
+        }
+        .await;
+
         Ok(PublishResult {
-            post_url: None,
+            post_url,
             platform_id: media_id.clone(),
             raw: json!({ "id": media_id }),
         })
@@ -921,5 +937,37 @@ mod tests {
         let Step::CreatePost { media_refs, facets, .. } = &result.steps[0] else { panic!() };
         assert_eq!(media_refs.len(), 2);
         assert_eq!(facets.as_array().unwrap().len(), 2);
+    }
+
+    // ── Snapshot tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn snap_fb_post_with_media_and_alt() {
+        let post = SourcePost {
+            text: "Hello Facebook".into(),
+            media: vec![
+                MediaRef { path: PathBuf::from("a.jpg"), alt: Some("image A".into()), url: None },
+                MediaRef { path: PathBuf::from("b.jpg"), alt: Some("image B".into()), url: None },
+            ],
+            hashtags: vec!["rust".into()],
+            platforms: Default::default(),
+        };
+        let result = fb().compose(&post).unwrap();
+        insta::assert_json_snapshot!(&result.steps);
+    }
+
+    #[test]
+    fn snap_ig_carousel() {
+        let post = SourcePost {
+            text: "Hello Instagram".into(),
+            media: vec![
+                media_with_url("https://example.com/a.jpg"),
+                media_with_url("https://example.com/b.jpg"),
+            ],
+            hashtags: vec!["rust".into()],
+            platforms: Default::default(),
+        };
+        let result = ig().compose(&post).unwrap();
+        insta::assert_json_snapshot!(&result.steps);
     }
 }

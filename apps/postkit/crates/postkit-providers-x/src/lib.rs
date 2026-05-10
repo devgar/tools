@@ -433,4 +433,34 @@ mod tests {
         assert!(matches!(result.steps[0], Step::UploadMedia { .. }));
         assert!(matches!(result.steps[1], Step::CreatePost { .. }));
     }
+
+    // ── Snapshot tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn snap_basic_post_with_hashtags() {
+        let source = SourcePost {
+            text: "Hello world".into(),
+            hashtags: vec!["rust".into(), "dev".into()],
+            media: vec![],
+            platforms: Default::default(),
+        };
+        let result = provider().compose(&source).unwrap();
+        insta::assert_json_snapshot!(&result.steps);
+    }
+
+    #[test]
+    fn snap_post_with_media() {
+        let source = SourcePost {
+            text: "Check this out".into(),
+            media: vec![MediaRef {
+                path: PathBuf::from("photo.jpg"),
+                alt: Some("a photo".into()),
+                url: None,
+            }],
+            hashtags: vec![],
+            platforms: Default::default(),
+        };
+        let result = provider().compose(&source).unwrap();
+        insta::assert_json_snapshot!(&result.steps);
+    }
 }

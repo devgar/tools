@@ -1,0 +1,24 @@
+---
+source: crates/postkit-providers-meta/src/lib.rs
+expression: "&result.steps"
+---
+[
+  {
+    "kind": "create_post",
+    "text": "Hello Instagram\n\n#rust",
+    "facets": [
+      {
+        "ref_id": "img0",
+        "url": "https://example.com/a.jpg"
+      },
+      {
+        "ref_id": "img1",
+        "url": "https://example.com/b.jpg"
+      }
+    ],
+    "media_refs": [
+      "img0",
+      "img1"
+    ]
+  }
+]
