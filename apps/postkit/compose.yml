@@ -1,0 +1,22 @@
+services:
+  postkit-daemon:
+    build:
+      context: .
+      dockerfile: Containerfile
+      target: daemon
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+      - ${HOME}/.config/postkit:/config:ro
+    restart: unless-stopped
+
+  postkit-cli:
+    build:
+      context: .
+      dockerfile: Containerfile
+      target: cli
+    volumes:
+      - ${HOME}/.config/postkit:/config:ro
+    profiles:
+      - cli
