@@ -132,14 +132,17 @@ impl FacebookPage {
         Ok(true)
     }
 
-    async fn upload_photo(&self, bytes: Vec<u8>) -> anyhow::Result<String> {
+    async fn upload_photo(&self, bytes: Vec<u8>, alt: Option<&str>) -> anyhow::Result<String> {
         let token = self.token.read().await.clone();
         let url = format!("{GRAPH}/{}/photos", self.page_id);
         let part = reqwest::multipart::Part::bytes(bytes).file_name("photo.jpg");
-        let form = reqwest::multipart::Form::new()
+        let mut form = reqwest::multipart::Form::new()
             .text("published", "false")
             .text("access_token", token)
             .part("source", part);
+        if let Some(text) = alt {
+            form = form.text("alt_text_custom", text.to_string());
+        }
         let res: Value = self
             .http
             .post(&url)
@@ -163,9 +166,9 @@ impl FacebookPage {
 
         for step in &prepared.steps {
             match step {
-                Step::UploadMedia { path, .. } => {
+                Step::UploadMedia { path, alt, .. } => {
                     let bytes = tokio::fs::read(path).await?;
-                    let id = self.upload_photo(bytes).await?;
+                    let id = self.upload_photo(bytes, alt.as_deref()).await?;
                     media_fbids.push(id);
                 }
                 Step::CreatePost { text, media_refs, .. } => {
@@ -215,7 +218,7 @@ impl Provider for FacebookPage {
             max_text_graphemes: FB_MAX_GRAPHEMES,
             max_media: FB_MAX_IMAGES,
             supports_threads: false,
-            supports_alt_text: false,
+            supports_alt_text: true,
         }
     }
 
@@ -734,6 +737,25 @@ mod tests {
             platforms: Default::default(),
         };
         assert!(fb().compose(&post).unwrap().warnings.is_empty());
+    }
+
+    #[test]
+    fn fb_compose_upload_step_carries_alt() {
+        let post = SourcePost {
+            text: "test".into(),
+            media: vec![MediaRef {
+                path: PathBuf::from("img.png"),
+                alt: Some("a crab".into()),
+                url: None,
+            }],
+            hashtags: vec![],
+            platforms: Default::default(),
+        };
+        let result = fb().compose(&post).unwrap();
+        match &result.steps[0] {
+            Step::UploadMedia { alt, .. } => assert_eq!(alt.as_deref(), Some("a crab")),
+            _ => panic!("expected UploadMedia"),
+        }
     }
 
     #[test]
