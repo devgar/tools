@@ -1,0 +1,27 @@
+---
+source: crates/postkit-providers-meta/src/lib.rs
+expression: "&result.steps"
+---
+[
+  {
+    "kind": "upload_media",
+    "path": "a.jpg",
+    "alt": "image A",
+    "ref_id": "img0"
+  },
+  {
+    "kind": "upload_media",
+    "path": "b.jpg",
+    "alt": "image B",
+    "ref_id": "img1"
+  },
+  {
+    "kind": "create_post",
+    "text": "Hello Facebook\n\n#rust",
+    "facets": null,
+    "media_refs": [
+      "img0",
+      "img1"
+    ]
+  }
+]

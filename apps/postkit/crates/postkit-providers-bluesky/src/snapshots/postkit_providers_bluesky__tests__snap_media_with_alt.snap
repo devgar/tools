@@ -1,0 +1,33 @@
+---
+source: crates/postkit-providers-bluesky/src/lib.rs
+expression: "&result.steps"
+---
+[
+  {
+    "kind": "upload_media",
+    "path": "photo.jpg",
+    "alt": "a ferris crab",
+    "ref_id": "img0"
+  },
+  {
+    "kind": "create_post",
+    "text": "Look at this\n\n#rust",
+    "facets": [
+      {
+        "features": [
+          {
+            "$type": "app.bsky.richtext.facet#tag",
+            "tag": "rust"
+          }
+        ],
+        "index": {
+          "byteEnd": 19,
+          "byteStart": 14
+        }
+      }
+    ],
+    "media_refs": [
+      "img0"
+    ]
+  }
+]

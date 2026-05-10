@@ -1,0 +1,65 @@
+# Ejemplo de config. Cópialo a ~/.config/postkit/config.toml
+# y rellena con tus credenciales.
+
+# ─── App credentials (compartidas por cuentas del mismo provider) ─────────────
+
+# [apps.mi_x_app]
+# provider = "x"
+# api_key    = "consumer_key"
+# api_secret = "consumer_secret"
+
+# [apps.mi_meta_app]
+# provider = "meta"
+# (sin campos extra; los tokens van por cuenta)
+
+# ─── Cuentas ──────────────────────────────────────────────────────────────────
+
+# Bluesky: self-contained, no requiere app.
+# IMPORTANTE: usa una app password de https://bsky.app/settings/app-passwords,
+# nunca tu contraseña principal.
+[accounts.personal_bsky]
+provider = "bluesky"
+handle = "tuhandle.bsky.social"
+app_password = "xxxx-xxxx-xxxx-xxxx"
+
+# Segunda cuenta Bluesky
+# [accounts.proyecto_bsky]
+# provider = "bluesky"
+# handle = "proyecto.bsky.social"
+# app_password = "yyyy-yyyy-yyyy-yyyy"
+
+# X (Twitter): referencia a [apps.mi_x_app]
+# [accounts.personal_x]
+# provider = "x"
+# app = "mi_x_app"
+# access_token        = "..."
+# access_token_secret = "..."
+
+# Segunda cuenta X bajo la misma app
+# [accounts.empresa_x]
+# provider = "x"
+# app = "mi_x_app"
+# access_token        = "..."
+# access_token_secret = "..."
+
+# Facebook Page: referencia a [apps.mi_meta_app]
+# [accounts.mipage]
+# provider = "facebook_page"
+# app = "mi_meta_app"
+# page_id = "123456789012345"
+# page_access_token = "EAA..."
+
+# Instagram Business/Creator (conectada a una Facebook Page)
+# NOTA: los posts requieren URL pública en el campo `url` de cada imagen.
+# [accounts.miig]
+# provider = "instagram"
+# app = "mi_meta_app"
+# ig_user_id = "123456789012345"
+# access_token = "EAA..."
+
+# ─── Daemon ──────────────────────────────────────────────────────────────────
+
+# Conexión al daemon para los subcomandos `schedule` y `draft`.
+# Si se omite daemon_url, se usa http://localhost:8080.
+# daemon_url     = "http://localhost:8080"
+# daemon_api_key = "your_api_key_here"

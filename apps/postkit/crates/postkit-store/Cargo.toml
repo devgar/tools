@@ -1,0 +1,18 @@
+[package]
+name = "postkit-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = "0.1"
+chrono = { workspace = true }
+postkit-core = { path = "../postkit-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { workspace = true }
