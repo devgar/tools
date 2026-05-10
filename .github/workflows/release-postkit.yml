@@ -1,0 +1,174 @@
+name: Release postkit
+
+on:
+  push:
+    branches:
+      - "release/apps/postkit/*"
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    name: Build & release binaries
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.next }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Parse bump type from branch name
+        id: bump
+        run: |
+          BUMP="${GITHUB_REF_NAME##*/}"
+          [[ "$BUMP" =~ ^(major|minor|patch)$ ]] \
+            || { echo "::error::Branch must end in major, minor or patch"; exit 1; }
+          echo "type=$BUMP" >> "$GITHUB_OUTPUT"
+
+      - name: Check for changes since last tag
+        id: changes
+        run: |
+          LAST_TAG=$(git tag -l "postkit-v*" --sort=-version:refname | head -1)
+          COUNT=$(git log "${LAST_TAG:-HEAD~1}"..HEAD --oneline -- apps/postkit/ | wc -l | tr -d ' ')
+          echo "Commits since ${LAST_TAG:-"(none)"}: $COUNT"
+          echo "has_changes=$([[ $COUNT -gt 0 ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@nightly
+        if: steps.changes.outputs.has_changes == 'true'
+        with:
+          components: rustfmt,clippy
+
+      - uses: actions/cache@v4
+        if: steps.changes.outputs.has_changes == 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/postkit/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('apps/postkit/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - uses: cargo-bins/cargo-binstall@v1.17.9
+        if: steps.changes.outputs.has_changes == 'true'
+
+      - name: Install cargo-bump & just
+        if: steps.changes.outputs.has_changes == 'true'
+        run: cargo binstall cargo-bump just --no-confirm
+
+      - name: Bump version
+        if: steps.changes.outputs.has_changes == 'true'
+        id: version
+        working-directory: apps/postkit
+        run: |
+          cargo bump ${{ steps.bump.outputs.type }}
+          echo "next=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Package
+        if: steps.changes.outputs.has_changes == 'true'
+        working-directory: apps/postkit
+        run: just package
+
+      - name: Commit, tag & push to main
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          git add apps/postkit/Cargo.toml apps/postkit/Cargo.lock
+          git commit -m "chore(apps/postkit): bump version to ${{ steps.version.outputs.next }}"
+          git tag "postkit-v${{ steps.version.outputs.next }}"
+          git push origin HEAD:${{ github.event.repository.default_branch }}
+          git push origin "postkit-v${{ steps.version.outputs.next }}"
+
+      - name: Create GitHub Release
+        if: steps.changes.outputs.has_changes == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "postkit-v${{ steps.version.outputs.next }}"
+          name: "postkit v${{ steps.version.outputs.next }}"
+          body: |
+            Binary release for Linux x86_64.
+
+            **Install CLI:**
+            ```sh
+            tar -xzf postkit-v${{ steps.version.outputs.next }}-x86_64-linux.tar.gz
+            sudo install -Dm755 postkit-v${{ steps.version.outputs.next }}-x86_64-linux /usr/local/bin/postkit
+            ```
+
+            **Install daemon:**
+            ```sh
+            tar -xzf postkit-daemon-v${{ steps.version.outputs.next }}-x86_64-linux.tar.gz
+            sudo install -Dm755 postkit-daemon-v${{ steps.version.outputs.next }}-x86_64-linux /usr/local/bin/postkit-daemon
+            ```
+
+            **OCI images:**
+            ```sh
+            docker pull ghcr.io/devgar/postkit:v${{ steps.version.outputs.next }}
+            docker pull ghcr.io/devgar/postkit-daemon:v${{ steps.version.outputs.next }}
+            ```
+          files: |
+            apps/postkit/postkit-v${{ steps.version.outputs.next }}-x86_64-linux
+            apps/postkit/postkit-v${{ steps.version.outputs.next }}-x86_64-linux.tar.gz
+            apps/postkit/postkit-daemon-v${{ steps.version.outputs.next }}-x86_64-linux
+            apps/postkit/postkit-daemon-v${{ steps.version.outputs.next }}-x86_64-linux.tar.gz
+            apps/postkit/checksums.txt
+
+      - name: Delete release branch
+        if: always()
+        run: git push origin --delete "${GITHUB_REF_NAME}" || true
+
+  # ─── OCI images ──────────────────────────────────────────────────────────────
+
+  images:
+    name: Build & push OCI images
+    runs-on: ubuntu-latest
+    needs: release
+    if: needs.release.outputs.version != ''
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push postkit-daemon
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/postkit
+          file: apps/postkit/Containerfile
+          target: daemon
+          push: true
+          tags: |
+            ghcr.io/devgar/postkit-daemon:v${{ needs.release.outputs.version }}
+            ghcr.io/devgar/postkit-daemon:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build & push postkit
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/postkit
+          file: apps/postkit/Containerfile
+          target: cli
+          push: true
+          tags: |
+            ghcr.io/devgar/postkit:v${{ needs.release.outputs.version }}
+            ghcr.io/devgar/postkit:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

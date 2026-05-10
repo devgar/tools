@@ -1,0 +1,52 @@
+alias b := build
+alias t := test
+
+build:
+    cargo build --release --bin postkit --bin postkit-daemon
+
+# Build, strip and package both release binaries into separate tarballs
+package: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)
+    strip target/release/postkit
+    strip target/release/postkit-daemon
+    cp target/release/postkit        "postkit-v${version}-x86_64-linux"
+    cp target/release/postkit-daemon "postkit-daemon-v${version}-x86_64-linux"
+    tar -czf "postkit-v${version}-x86_64-linux.tar.gz"        "postkit-v${version}-x86_64-linux"
+    tar -czf "postkit-daemon-v${version}-x86_64-linux.tar.gz" "postkit-daemon-v${version}-x86_64-linux"
+    sha256sum \
+        "postkit-v${version}-x86_64-linux" \
+        "postkit-v${version}-x86_64-linux.tar.gz" \
+        "postkit-daemon-v${version}-x86_64-linux" \
+        "postkit-daemon-v${version}-x86_64-linux.tar.gz" > checksums.txt
+    echo "→ postkit-v${version}-x86_64-linux"
+    echo "→ postkit-v${version}-x86_64-linux.tar.gz"
+    echo "→ postkit-daemon-v${version}-x86_64-linux"
+    echo "→ postkit-daemon-v${version}-x86_64-linux.tar.gz"
+
+test:
+    cargo test
+
+# Trigger a release via GitHub Actions
+# Usage: just release major|minor|patch
+release bump:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ ! "{{bump}}" =~ ^(major|minor|patch)$ ]]; then
+        echo "Error: argument must be major, minor or patch" >&2
+        exit 1
+    fi
+    branch="release/apps/postkit/{{bump}}"
+    git checkout -b "$branch"
+    git push origin "$branch"
+    git checkout -
+
+# Bump version locally without triggering CI (requires cargo-bump)
+# Usage: just release-local major|minor|patch
+release-local bump:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo bump {{bump}}
+    version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+    echo "→ v$version"
