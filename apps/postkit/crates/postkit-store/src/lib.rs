@@ -1,10 +1,16 @@
+use std::str::FromStr;
+
 use chrono::{DateTime, TimeZone, Utc};
 use postkit_core::{TokenSet, TokenSink};
 use serde::{Deserialize, Serialize};
-use sqlx::{Row as _, SqlitePool};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
+    Row as _, SqlitePool,
+};
 
 /// Fila pública expuesta por la store. Los timestamps se exponen como DateTime<Utc>.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ScheduledPost {
     pub id: i64,
     pub account_id: String,
@@ -79,12 +85,18 @@ pub struct Store {
 
 impl Store {
     pub async fn open(path: &str) -> anyhow::Result<Self> {
-        let url = if path == ":memory:" {
-            "sqlite::memory:".to_string()
+        let pool = if path == ":memory:" {
+            SqlitePool::connect("sqlite::memory:").await?
         } else {
-            format!("sqlite:{path}?mode=rwc")
+            let url = format!("sqlite:{path}?mode=rwc");
+            let opts = SqliteConnectOptions::from_str(&url)?
+                .journal_mode(SqliteJournalMode::Wal)
+                .busy_timeout(std::time::Duration::from_secs(5));
+            SqlitePoolOptions::new()
+                .max_connections(5)
+                .connect_with(opts)
+                .await?
         };
-        let pool = SqlitePool::connect(&url).await?;
         sqlx::migrate!().run(&pool).await?;
         let store = Self { pool };
         store.recover_running().await?;
