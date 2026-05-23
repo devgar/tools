@@ -88,6 +88,11 @@ impl Store {
         let pool = if path == ":memory:" {
             SqlitePool::connect("sqlite::memory:").await?
         } else {
+            if let Some(parent) = std::path::Path::new(path).parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent)?;
+                }
+            }
             let url = format!("sqlite:{path}?mode=rwc");
             let opts = SqliteConnectOptions::from_str(&url)?
                 .journal_mode(SqliteJournalMode::Wal)
@@ -182,6 +187,26 @@ impl Store {
             qb.push(" OFFSET ").push_bind(offset);
         }
 
+        let rows: Vec<Row> = qb.build_query_as::<Row>().fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// Marca como 'running' los posts con los IDs dados, sólo si están en 'pending'.
+    pub async fn claim_by_ids(&self, ids: &[i64]) -> anyhow::Result<Vec<ScheduledPost>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut qb =
+            sqlx::QueryBuilder::new("UPDATE scheduled_posts SET status = 'running' WHERE id IN (");
+        let mut sep = qb.separated(", ");
+        for id in ids {
+            sep.push_bind(*id);
+        }
+        qb.push(
+            ") AND status = 'pending' \
+             RETURNING id, account_id, provider, source_post, scheduled_at, status, attempts, \
+                       published_at, post_url, error, created_at",
+        );
         let rows: Vec<Row> = qb.build_query_as::<Row>().fetch_all(&self.pool).await?;
         Ok(rows.into_iter().map(Into::into).collect())
     }

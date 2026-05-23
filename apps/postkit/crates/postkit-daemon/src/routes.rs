@@ -14,11 +14,14 @@ use postkit_store::{ListFilters, ScheduledPost, Store};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, OpenApi, ToSchema};
 
+use crate::queue::AnyQueue;
+
 pub struct AppState {
     pub store: Store,
     pub providers: Arc<HashMap<String, Arc<dyn Provider>>>,
     /// None → sin autenticación (dev local).
     pub api_key: Option<String>,
+    pub queue: AnyQueue,
 }
 
 // ─── OpenAPI ─────────────────────────────────────────────────────────────────
@@ -175,19 +178,22 @@ async fn schedule_post(
 
     let id = match body.scheduled_at {
         Some(at) => {
-            state
+            let id = state
                 .store
                 .schedule(&body.account_id, &provider_str, &source_json, at)
                 .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            if let Err(e) = state.queue.push(id, at.timestamp()).await {
+                tracing::warn!(id, "queue: {e}");
+            }
+            id
         }
-        None => {
-            state
-                .store
-                .create_draft(&body.account_id, &provider_str, &source_json)
-                .await
-        }
-    }
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        None => state
+            .store
+            .create_draft(&body.account_id, &provider_str, &source_json)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
+    };
 
     Ok(Json(IdResponse { id }))
 }
@@ -195,6 +201,7 @@ async fn schedule_post(
 // ─── GET /scheduled ──────────────────────────────────────────────────────────
 
 #[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 struct ListQuery {
     account_id: Option<String>,
     provider: Option<String>,
@@ -287,6 +294,9 @@ async fn cancel_scheduled(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     if ok {
+        if let Err(e) = state.queue.remove(id).await {
+            tracing::warn!(id, "queue: {e}");
+        }
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err((StatusCode::NOT_FOUND, format!("post {id} no encontrado o no está en pending")))
@@ -337,6 +347,11 @@ async fn update_scheduled(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     if ok {
+        if let Some(at) = body.scheduled_at {
+            if let Err(e) = state.queue.push(id, at.timestamp()).await {
+                tracing::warn!(id, "queue: {e}");
+            }
+        }
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err((StatusCode::NOT_FOUND, format!("post {id} no encontrado o no está en pending")))
@@ -367,6 +382,9 @@ async fn retry_scheduled(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     if ok {
+        if let Err(e) = state.queue.push(id, Utc::now().timestamp()).await {
+            tracing::warn!(id, "queue: {e}");
+        }
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err((StatusCode::NOT_FOUND, format!("post {id} no encontrado o no está en failed")))
@@ -417,6 +435,7 @@ mod tests {
             store,
             providers: Arc::new(HashMap::new()),
             api_key: api_key.map(str::to_string),
+            queue: crate::queue::build(None).await,
         })
     }
 
@@ -424,7 +443,12 @@ mod tests {
         let store = Store::open(":memory:").await.unwrap();
         let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
         providers.insert("test".to_string(), Arc::new(MockProvider));
-        Arc::new(AppState { store, providers: Arc::new(providers), api_key: None })
+        Arc::new(AppState {
+            store,
+            providers: Arc::new(providers),
+            api_key: None,
+            queue: crate::queue::build(None).await,
+        })
     }
 
     #[tokio::test]
