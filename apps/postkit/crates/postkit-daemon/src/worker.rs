@@ -97,3 +97,155 @@ async fn publish(
     let result = provider.execute(&prepared).await?;
     Ok(result.post_url)
 }
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use async_trait::async_trait;
+    use chrono::Utc;
+    use postkit_core::{
+        AccountInfo, Capabilities, PreparedPost, Provider, ProviderKind, PublishResult, SourcePost,
+    };
+
+    use super::*;
+
+    fn make_post(account_id: &str, source_json: &str) -> ScheduledPost {
+        ScheduledPost {
+            id: 1,
+            account_id: account_id.to_string(),
+            provider: "bluesky".to_string(),
+            source_post: source_json.to_string(),
+            scheduled_at: Utc::now(),
+            status: "running".to_string(),
+            attempts: 0,
+            published_at: None,
+            post_url: None,
+            error: None,
+            created_at: Utc::now(),
+        }
+    }
+
+    fn valid_source() -> &'static str {
+        r#"{"text":"hello","media":[],"hashtags":[],"platforms":{}}"#
+    }
+
+    struct OkProvider {
+        url: Option<String>,
+    }
+
+    #[async_trait]
+    impl Provider for OkProvider {
+        fn kind(&self) -> ProviderKind { ProviderKind::Bluesky }
+        fn account_id(&self) -> &str { "acc" }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                max_text_graphemes: 300,
+                max_media: 4,
+                supports_threads: false,
+                supports_alt_text: true,
+            }
+        }
+        async fn verify(&self) -> anyhow::Result<AccountInfo> { unimplemented!() }
+        fn compose(&self, _: &SourcePost) -> anyhow::Result<PreparedPost> {
+            Ok(PreparedPost {
+                account_id: "acc".into(),
+                provider: ProviderKind::Bluesky,
+                steps: vec![],
+                warnings: vec![],
+            })
+        }
+        async fn execute(&self, _: &PreparedPost) -> anyhow::Result<PublishResult> {
+            Ok(PublishResult {
+                platform_id: "123".into(),
+                post_url: self.url.clone(),
+                raw: serde_json::Value::Null,
+            })
+        }
+    }
+
+    struct FailProvider {
+        on: &'static str,
+    }
+
+    #[async_trait]
+    impl Provider for FailProvider {
+        fn kind(&self) -> ProviderKind { ProviderKind::Bluesky }
+        fn account_id(&self) -> &str { "acc" }
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                max_text_graphemes: 300,
+                max_media: 4,
+                supports_threads: false,
+                supports_alt_text: true,
+            }
+        }
+        async fn verify(&self) -> anyhow::Result<AccountInfo> { unimplemented!() }
+        fn compose(&self, _: &SourcePost) -> anyhow::Result<PreparedPost> {
+            if self.on == "compose" {
+                anyhow::bail!("compose failed");
+            }
+            Ok(PreparedPost {
+                account_id: "acc".into(),
+                provider: ProviderKind::Bluesky,
+                steps: vec![],
+                warnings: vec![],
+            })
+        }
+        async fn execute(&self, _: &PreparedPost) -> anyhow::Result<PublishResult> {
+            anyhow::bail!("execute failed")
+        }
+    }
+
+    fn providers_with(id: &str, p: Arc<dyn Provider>) -> HashMap<String, Arc<dyn Provider>> {
+        let mut m = HashMap::new();
+        m.insert(id.to_string(), p);
+        m
+    }
+
+    #[tokio::test]
+    async fn publish_unknown_account_returns_error() {
+        let post = make_post("ghost", valid_source());
+        let result = publish(&post, &HashMap::new()).await;
+        assert!(result.unwrap_err().to_string().contains("unknown account"));
+    }
+
+    #[tokio::test]
+    async fn publish_invalid_source_json_returns_error() {
+        let post = make_post("acc", "not json");
+        let providers = providers_with("acc", Arc::new(OkProvider { url: None }));
+        assert!(publish(&post, &providers).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn publish_success_returns_url() {
+        let post = make_post("acc", valid_source());
+        let providers =
+            providers_with("acc", Arc::new(OkProvider { url: Some("https://example.com".into()) }));
+        let url = publish(&post, &providers).await.unwrap();
+        assert_eq!(url, Some("https://example.com".to_string()));
+    }
+
+    #[tokio::test]
+    async fn publish_success_no_url() {
+        let post = make_post("acc", valid_source());
+        let providers = providers_with("acc", Arc::new(OkProvider { url: None }));
+        assert_eq!(publish(&post, &providers).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn publish_compose_failure_returns_error() {
+        let post = make_post("acc", valid_source());
+        let providers = providers_with("acc", Arc::new(FailProvider { on: "compose" }));
+        let err = publish(&post, &providers).await.unwrap_err();
+        assert!(err.to_string().contains("compose failed"));
+    }
+
+    #[tokio::test]
+    async fn publish_execute_failure_returns_error() {
+        let post = make_post("acc", valid_source());
+        let providers = providers_with("acc", Arc::new(FailProvider { on: "execute" }));
+        let err = publish(&post, &providers).await.unwrap_err();
+        assert!(err.to_string().contains("execute failed"));
+    }
+}

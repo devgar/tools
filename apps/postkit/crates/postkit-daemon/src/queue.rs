@@ -210,3 +210,103 @@ pub async fn build(redis_url: Option<&str>) -> AnyQueue {
     info!("queue: using in-memory queue");
     Arc::new(MemoryQueue::new())
 }
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn past() -> i64 { Utc::now().timestamp() - 60 }
+    fn future() -> i64 { Utc::now().timestamp() + 3600 }
+
+    #[tokio::test]
+    async fn push_and_pop_due_past() {
+        let q = MemoryQueue::new();
+        q.push(1, past()).await.unwrap();
+        let ids = q.pop_due(10).await.unwrap();
+        assert_eq!(ids, vec![1]);
+    }
+
+    #[tokio::test]
+    async fn pop_due_skips_future() {
+        let q = MemoryQueue::new();
+        q.push(1, future()).await.unwrap();
+        let ids = q.pop_due(10).await.unwrap();
+        assert!(ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn pop_due_removes_from_queue() {
+        let q = MemoryQueue::new();
+        q.push(1, past()).await.unwrap();
+        q.pop_due(10).await.unwrap();
+        // second pop should return nothing
+        assert!(q.pop_due(10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn remove_prevents_pop() {
+        let q = MemoryQueue::new();
+        q.push(1, past()).await.unwrap();
+        q.remove(1).await.unwrap();
+        assert!(q.pop_due(10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn push_deduplicates_same_id() {
+        let q = MemoryQueue::new();
+        q.push(1, future()).await.unwrap();
+        // re-push with a past timestamp — the entry should now be due
+        q.push(1, past()).await.unwrap();
+        let ids = q.pop_due(10).await.unwrap();
+        assert_eq!(ids, vec![1]);
+    }
+
+    #[tokio::test]
+    async fn pop_due_respects_limit() {
+        let q = MemoryQueue::new();
+        for id in 1i64..=5 {
+            q.push(id, past() - id).await.unwrap(); // distinct timestamps
+        }
+        let ids = q.pop_due(3).await.unwrap();
+        assert_eq!(ids.len(), 3);
+        // remaining two are still in queue
+        assert_eq!(q.pop_due(10).await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn next_due_in_secs_empty_queue() {
+        let q = MemoryQueue::new();
+        assert!(q.next_due_in_secs().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn next_due_in_secs_future_item() {
+        let q = MemoryQueue::new();
+        q.push(1, Utc::now().timestamp() + 100).await.unwrap();
+        let secs = q.next_due_in_secs().await.unwrap().unwrap();
+        // allow a little clock drift in CI
+        assert!(secs <= 100 && secs >= 95);
+    }
+
+    #[tokio::test]
+    async fn next_due_in_secs_past_item_returns_zero() {
+        let q = MemoryQueue::new();
+        q.push(1, past()).await.unwrap();
+        assert_eq!(q.next_due_in_secs().await.unwrap(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn wait_for_activity_resolves_after_push() {
+        let q = Arc::new(MemoryQueue::new());
+        let q2 = q.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+            q2.push(1, past()).await.unwrap();
+        });
+        tokio::time::timeout(tokio::time::Duration::from_millis(500), q.wait_for_activity())
+            .await
+            .expect("wait_for_activity should resolve after push");
+    }
+}
