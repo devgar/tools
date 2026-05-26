@@ -1,5 +1,6 @@
 use std::{collections::HashMap, path::Path};
 
+use anyhow::Context as _;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -15,6 +16,8 @@ pub struct DaemonConfig {
     pub retry_delay_secs: u64,
     /// Si se omite, el daemon no requiere autenticación (útil en dev local).
     pub api_key: Option<String>,
+    /// URL de Redis. Si se omite o la conexión falla, se usa una cola en memoria.
+    pub redis_url: Option<String>,
 }
 
 fn default_poll() -> u64 { 30 }
@@ -23,8 +26,9 @@ fn default_retry_delay() -> u64 { 60 }
 
 impl DaemonConfig {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let text = std::fs::read_to_string(path)?;
-        Ok(toml::from_str(&text)?)
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("no se encontró '{}'", path.display()))?;
+        toml::from_str(&text).with_context(|| format!("error al parsear '{}'", path.display()))
     }
 }
 

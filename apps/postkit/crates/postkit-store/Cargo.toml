@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+openapi = ["dep:utoipa"]
+
 [dependencies]
 anyhow = { workspace = true }
 async-trait = "0.1"
@@ -13,6 +16,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
 tracing = "0.1"
+utoipa = { version = "5", features = ["chrono"], optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

@@ -4,7 +4,7 @@ use axum::{
     extract::{Path, Query, Request, State},
     http::StatusCode,
     middleware::{self, Next},
-    response::{Json, Response},
+    response::{IntoResponse, Json, Response},
     routing::{get, post},
     Router,
 };
@@ -12,13 +12,70 @@ use chrono::{DateTime, Utc};
 use postkit_core::Provider;
 use postkit_store::{ListFilters, ScheduledPost, Store};
 use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, OpenApi, ToSchema};
+
+use crate::queue::AnyQueue;
 
 pub struct AppState {
     pub store: Store,
     pub providers: Arc<HashMap<String, Arc<dyn Provider>>>,
     /// None → sin autenticación (dev local).
     pub api_key: Option<String>,
+    pub queue: AnyQueue,
 }
+
+// ─── OpenAPI ─────────────────────────────────────────────────────────────────
+
+struct ApiKeyAuth;
+
+impl utoipa::Modify for ApiKeyAuth {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        if let Some(c) = openapi.components.as_mut() {
+            c.add_security_scheme(
+                "api_key",
+                utoipa::openapi::security::SecurityScheme::ApiKey(
+                    utoipa::openapi::security::ApiKey::Header(
+                        utoipa::openapi::security::ApiKeyValue::new("X-Api-Key"),
+                    ),
+                ),
+            );
+        }
+    }
+}
+
+#[derive(OpenApi)]
+#[openapi(
+    paths(
+        health,
+        openapi_spec,
+        schedule_post,
+        list_scheduled,
+        get_scheduled,
+        cancel_scheduled,
+        update_scheduled,
+        retry_scheduled,
+    ),
+    components(schemas(
+        Health,
+        ScheduleBody,
+        IdResponse,
+        UpdateBody,
+        postkit_store::ScheduledPost,
+    )),
+    modifiers(&ApiKeyAuth),
+    info(title = "postkit API", version = env!("CARGO_PKG_VERSION")),
+)]
+struct ApiDoc;
+
+#[utoipa::path(
+    get,
+    path = "/openapi.json",
+    responses(
+        (status = 200, description = "OpenAPI spec (JSON)")
+    ),
+    tag = "system"
+)]
+async fn openapi_spec() -> impl IntoResponse { Json(ApiDoc::openapi()) }
 
 pub fn router(state: Arc<AppState>) -> Router {
     let protected = Router::new()
@@ -35,6 +92,7 @@ pub fn router(state: Arc<AppState>) -> Router {
 
     Router::new()
         .route("/health", get(health))
+        .route("/openapi.json", get(openapi_spec))
         .merge(protected)
         .with_state(state)
 }
@@ -61,30 +119,51 @@ async fn auth(
 
 // ─── GET /health ─────────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct Health {
     status: &'static str,
     version: &'static str,
 }
 
+#[utoipa::path(
+    get,
+    path = "/health",
+    responses(
+        (status = 200, description = "Service is healthy", body = Health)
+    ),
+    tag = "system"
+)]
 async fn health() -> Json<Health> {
     Json(Health { status: "ok", version: env!("CARGO_PKG_VERSION") })
 }
 
 // ─── POST /schedule ──────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct ScheduleBody {
     pub account_id: String,
+    #[schema(value_type = Object)]
     pub source_post: postkit_core::SourcePost,
     pub scheduled_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct IdResponse {
     id: i64,
 }
 
+#[utoipa::path(
+    post,
+    path = "/schedule",
+    request_body = ScheduleBody,
+    responses(
+        (status = 200, description = "Post scheduled or draft created", body = IdResponse),
+        (status = 400, description = "Unknown account"),
+        (status = 500, description = "Internal error"),
+    ),
+    security(("api_key" = [])),
+    tag = "posts"
+)]
 async fn schedule_post(
     State(state): State<Arc<AppState>>,
     Json(body): Json<ScheduleBody>,
@@ -99,26 +178,30 @@ async fn schedule_post(
 
     let id = match body.scheduled_at {
         Some(at) => {
-            state
+            let id = state
                 .store
                 .schedule(&body.account_id, &provider_str, &source_json, at)
                 .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            if let Err(e) = state.queue.push(id, at.timestamp()).await {
+                tracing::warn!(id, "queue: {e}");
+            }
+            id
         }
-        None => {
-            state
-                .store
-                .create_draft(&body.account_id, &provider_str, &source_json)
-                .await
-        }
-    }
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        None => state
+            .store
+            .create_draft(&body.account_id, &provider_str, &source_json)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
+    };
 
     Ok(Json(IdResponse { id }))
 }
 
 // ─── GET /scheduled ──────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 struct ListQuery {
     account_id: Option<String>,
     provider: Option<String>,
@@ -129,6 +212,17 @@ struct ListQuery {
     offset: Option<i64>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/scheduled",
+    params(ListQuery),
+    responses(
+        (status = 200, description = "List of scheduled posts", body = Vec<ScheduledPost>),
+        (status = 500, description = "Internal error"),
+    ),
+    security(("api_key" = [])),
+    tag = "posts"
+)]
 async fn list_scheduled(
     State(state): State<Arc<AppState>>,
     Query(q): Query<ListQuery>,
@@ -151,6 +245,18 @@ async fn list_scheduled(
 
 // ─── GET /scheduled/:id ──────────────────────────────────────────────────────
 
+#[utoipa::path(
+    get,
+    path = "/scheduled/{id}",
+    params(("id" = i64, Path, description = "Post ID")),
+    responses(
+        (status = 200, description = "Scheduled post", body = ScheduledPost),
+        (status = 404, description = "Post not found"),
+        (status = 500, description = "Internal error"),
+    ),
+    security(("api_key" = [])),
+    tag = "posts"
+)]
 async fn get_scheduled(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
@@ -166,6 +272,18 @@ async fn get_scheduled(
 
 // ─── DELETE /scheduled/:id ───────────────────────────────────────────────────
 
+#[utoipa::path(
+    delete,
+    path = "/scheduled/{id}",
+    params(("id" = i64, Path, description = "Post ID")),
+    responses(
+        (status = 204, description = "Post cancelled"),
+        (status = 404, description = "Post not found or not cancellable"),
+        (status = 500, description = "Internal error"),
+    ),
+    security(("api_key" = [])),
+    tag = "posts"
+)]
 async fn cancel_scheduled(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
@@ -176,6 +294,9 @@ async fn cancel_scheduled(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     if ok {
+        if let Err(e) = state.queue.remove(id).await {
+            tracing::warn!(id, "queue: {e}");
+        }
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err((StatusCode::NOT_FOUND, format!("post {id} no encontrado o no está en pending")))
@@ -184,12 +305,27 @@ async fn cancel_scheduled(
 
 // ─── PUT /scheduled/:id ──────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct UpdateBody {
+    #[schema(value_type = Object)]
     source_post: Option<postkit_core::SourcePost>,
     scheduled_at: Option<DateTime<Utc>>,
 }
 
+#[utoipa::path(
+    put,
+    path = "/scheduled/{id}",
+    params(("id" = i64, Path, description = "Post ID")),
+    request_body = UpdateBody,
+    responses(
+        (status = 204, description = "Post updated"),
+        (status = 404, description = "Post not found or not updatable"),
+        (status = 422, description = "Nothing to update"),
+        (status = 500, description = "Internal error"),
+    ),
+    security(("api_key" = [])),
+    tag = "posts"
+)]
 async fn update_scheduled(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
@@ -211,6 +347,11 @@ async fn update_scheduled(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     if ok {
+        if let Some(at) = body.scheduled_at {
+            if let Err(e) = state.queue.push(id, at.timestamp()).await {
+                tracing::warn!(id, "queue: {e}");
+            }
+        }
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err((StatusCode::NOT_FOUND, format!("post {id} no encontrado o no está en pending")))
@@ -219,6 +360,18 @@ async fn update_scheduled(
 
 // ─── POST /scheduled/:id/retry ───────────────────────────────────────────────
 
+#[utoipa::path(
+    post,
+    path = "/scheduled/{id}/retry",
+    params(("id" = i64, Path, description = "Post ID")),
+    responses(
+        (status = 204, description = "Post queued for retry"),
+        (status = 404, description = "Post not found or not in failed state"),
+        (status = 500, description = "Internal error"),
+    ),
+    security(("api_key" = [])),
+    tag = "posts"
+)]
 async fn retry_scheduled(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
@@ -229,6 +382,9 @@ async fn retry_scheduled(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     if ok {
+        if let Err(e) = state.queue.push(id, Utc::now().timestamp()).await {
+            tracing::warn!(id, "queue: {e}");
+        }
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err((StatusCode::NOT_FOUND, format!("post {id} no encontrado o no está en failed")))
@@ -279,6 +435,7 @@ mod tests {
             store,
             providers: Arc::new(HashMap::new()),
             api_key: api_key.map(str::to_string),
+            queue: crate::queue::build(None).await,
         })
     }
 
@@ -286,7 +443,12 @@ mod tests {
         let store = Store::open(":memory:").await.unwrap();
         let mut providers: HashMap<String, Arc<dyn Provider>> = HashMap::new();
         providers.insert("test".to_string(), Arc::new(MockProvider));
-        Arc::new(AppState { store, providers: Arc::new(providers), api_key: None })
+        Arc::new(AppState {
+            store,
+            providers: Arc::new(providers),
+            api_key: None,
+            queue: crate::queue::build(None).await,
+        })
     }
 
     #[tokio::test]

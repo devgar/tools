@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 postkit-core = { path = "../postkit-core" }
-postkit-store = { path = "../postkit-store" }
+postkit-store = { path = "../postkit-store", features = ["openapi"] }
 postkit-providers-bluesky = { path = "../postkit-providers-bluesky" }
 postkit-providers-x = { path = "../postkit-providers-x" }
 postkit-providers-meta = { path = "../postkit-providers-meta" }
@@ -25,6 +25,8 @@ clap = { version = "4", features = ["derive"] }
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+utoipa = { version = "5", features = ["chrono"] }
+redis = { version = "0.27", features = ["tokio-comp"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

@@ -1,4 +1,5 @@
 mod config;
+mod queue;
 mod routes;
 mod worker;
 
@@ -11,7 +12,7 @@ use postkit_core::{Provider, TokenSink};
 use postkit_providers_bluesky::Bluesky;
 use postkit_providers_meta::{FacebookPage, Instagram, MetaProvider};
 use postkit_providers_x::X;
-use postkit_store::Store;
+use postkit_store::{ListFilters, Store};
 use routes::AppState;
 use tokio::sync::watch;
 use tracing::{info, warn};
@@ -19,8 +20,31 @@ use tracing::{info, warn};
 #[derive(Parser)]
 #[command(name = "postkit-daemon")]
 struct Cli {
-    #[arg(long, default_value = "daemon.toml")]
-    config: PathBuf,
+    /// Ruta al archivo de configuración. Por defecto: ~/.config/postkit/daemon.toml
+    #[arg(long)]
+    config: Option<PathBuf>,
+}
+
+fn find_config() -> Option<PathBuf> {
+    // 1. $XDG_CONFIG_HOME/postkit/daemon.toml  (~/.config/postkit/daemon.toml)
+    let user_base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
+    if let Some(p) = user_base.map(|b| b.join("postkit/daemon.toml")) {
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    // 2. $XDG_CONFIG_DIRS/postkit/daemon.toml  (default: /etc/xdg/postkit/daemon.toml)
+    let dirs =
+        std::env::var_os("XDG_CONFIG_DIRS").unwrap_or_else(|| std::ffi::OsString::from("/etc/xdg"));
+    for dir in std::env::split_paths(&dirs) {
+        let p = dir.join("postkit/daemon.toml");
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    None
 }
 
 #[tokio::main]
@@ -33,16 +57,36 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let cfg = DaemonConfig::load(&cli.config)?;
+    let config_path = cli.config.or_else(find_config).ok_or_else(|| {
+        anyhow::anyhow!(
+            "daemon.toml not found; place it at $XDG_CONFIG_HOME/postkit/daemon.toml \
+             (default: ~/.config/postkit/daemon.toml) or pass --config <path>"
+        )
+    })?;
+    let cfg = DaemonConfig::load(&config_path)?;
 
     let store = Store::open(&cfg.db_path).await?;
     let (apps, accounts) = config::load_accounts(&cfg.accounts_config)?;
     let providers = Arc::new(build_providers(&apps, accounts, &store).await?);
 
+    let queue = queue::build(cfg.redis_url.as_deref()).await;
+
+    // Sync pending posts into the queue so nothing is missed on restart.
+    let pending = store
+        .list(&ListFilters { status: Some("pending".into()), ..Default::default() })
+        .await?;
+    info!("sync: {} posts pendientes cargados en la cola", pending.len());
+    for post in &pending {
+        if let Err(e) = queue.push(post.id, post.scheduled_at.timestamp()).await {
+            warn!(id = post.id, "sync: error al encolar post: {e}");
+        }
+    }
+
     let state = Arc::new(AppState {
         store: store.clone(),
         providers: providers.clone(),
         api_key: cfg.api_key,
+        queue: queue.clone(),
     });
 
     let addr: SocketAddr = cfg.listen.parse()?;
@@ -52,6 +96,7 @@ async fn main() -> Result<()> {
 
     tokio::spawn(worker::run(
         store,
+        queue,
         providers,
         cfg.poll_interval_secs,
         cfg.max_attempts,

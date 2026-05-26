@@ -1,10 +1,16 @@
+use std::str::FromStr;
+
 use chrono::{DateTime, TimeZone, Utc};
 use postkit_core::{TokenSet, TokenSink};
 use serde::{Deserialize, Serialize};
-use sqlx::{Row as _, SqlitePool};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
+    Row as _, SqlitePool,
+};
 
 /// Fila pública expuesta por la store. Los timestamps se exponen como DateTime<Utc>.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ScheduledPost {
     pub id: i64,
     pub account_id: String,
@@ -79,12 +85,23 @@ pub struct Store {
 
 impl Store {
     pub async fn open(path: &str) -> anyhow::Result<Self> {
-        let url = if path == ":memory:" {
-            "sqlite::memory:".to_string()
+        let pool = if path == ":memory:" {
+            SqlitePool::connect("sqlite::memory:").await?
         } else {
-            format!("sqlite:{path}?mode=rwc")
+            if let Some(parent) = std::path::Path::new(path).parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent)?;
+                }
+            }
+            let url = format!("sqlite:{path}?mode=rwc");
+            let opts = SqliteConnectOptions::from_str(&url)?
+                .journal_mode(SqliteJournalMode::Wal)
+                .busy_timeout(std::time::Duration::from_secs(5));
+            SqlitePoolOptions::new()
+                .max_connections(5)
+                .connect_with(opts)
+                .await?
         };
-        let pool = SqlitePool::connect(&url).await?;
         sqlx::migrate!().run(&pool).await?;
         let store = Self { pool };
         store.recover_running().await?;
@@ -170,6 +187,26 @@ impl Store {
             qb.push(" OFFSET ").push_bind(offset);
         }
 
+        let rows: Vec<Row> = qb.build_query_as::<Row>().fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// Marca como 'running' los posts con los IDs dados, sólo si están en 'pending'.
+    pub async fn claim_by_ids(&self, ids: &[i64]) -> anyhow::Result<Vec<ScheduledPost>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut qb =
+            sqlx::QueryBuilder::new("UPDATE scheduled_posts SET status = 'running' WHERE id IN (");
+        let mut sep = qb.separated(", ");
+        for id in ids {
+            sep.push_bind(*id);
+        }
+        qb.push(
+            ") AND status = 'pending' \
+             RETURNING id, account_id, provider, source_post, scheduled_at, status, attempts, \
+                       published_at, post_url, error, created_at",
+        );
         let rows: Vec<Row> = qb.build_query_as::<Row>().fetch_all(&self.pool).await?;
         Ok(rows.into_iter().map(Into::into).collect())
     }
