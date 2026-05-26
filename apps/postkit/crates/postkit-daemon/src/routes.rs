@@ -19,7 +19,7 @@ use crate::queue::AnyQueue;
 pub struct AppState {
     pub store: Store,
     pub providers: Arc<HashMap<String, Arc<dyn Provider>>>,
-    /// None → sin autenticación (dev local).
+    /// None → authentication disabled (local dev).
     pub api_key: Option<String>,
     pub queue: AnyQueue,
 }
@@ -111,7 +111,7 @@ async fn auth(
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
         if provided != expected {
-            return Err((StatusCode::UNAUTHORIZED, "API key inválida o ausente"));
+            return Err((StatusCode::UNAUTHORIZED, "invalid or missing API key"));
         }
     }
     Ok(next.run(req).await)
@@ -169,7 +169,7 @@ async fn schedule_post(
     Json(body): Json<ScheduleBody>,
 ) -> Result<Json<IdResponse>, (StatusCode, String)> {
     let provider = state.providers.get(&body.account_id).ok_or_else(|| {
-        (StatusCode::BAD_REQUEST, format!("cuenta desconocida: {}", body.account_id))
+        (StatusCode::BAD_REQUEST, format!("unknown account: {}", body.account_id))
     })?;
 
     let provider_str = format!("{:?}", provider.kind()).to_lowercase();
@@ -267,7 +267,7 @@ async fn get_scheduled(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map(Json)
-        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("post {id} no encontrado")))
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("post {id} not found")))
 }
 
 // ─── DELETE /scheduled/:id ───────────────────────────────────────────────────
@@ -299,7 +299,7 @@ async fn cancel_scheduled(
         }
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err((StatusCode::NOT_FOUND, format!("post {id} no encontrado o no está en pending")))
+        Err((StatusCode::NOT_FOUND, format!("post {id} not found or not in pending state")))
     }
 }
 
@@ -332,7 +332,7 @@ async fn update_scheduled(
     Json(body): Json<UpdateBody>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     if body.source_post.is_none() && body.scheduled_at.is_none() {
-        return Err((StatusCode::UNPROCESSABLE_ENTITY, "nada que actualizar".into()));
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, "nothing to update".into()));
     }
     let source_json = body
         .source_post
@@ -354,7 +354,7 @@ async fn update_scheduled(
         }
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err((StatusCode::NOT_FOUND, format!("post {id} no encontrado o no está en pending")))
+        Err((StatusCode::NOT_FOUND, format!("post {id} not found or not in pending state")))
     }
 }
 
@@ -387,7 +387,7 @@ async fn retry_scheduled(
         }
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err((StatusCode::NOT_FOUND, format!("post {id} no encontrado o no está en failed")))
+        Err((StatusCode::NOT_FOUND, format!("post {id} not found or not in failed state")))
     }
 }
 

@@ -112,15 +112,15 @@ pub struct RedisQueue {
 impl RedisQueue {
     pub async fn connect(url: &str) -> anyhow::Result<Self> {
         let client =
-            redis::Client::open(url).map_err(|e| anyhow::anyhow!("Redis URL inválida: {e}"))?;
+            redis::Client::open(url).map_err(|e| anyhow::anyhow!("invalid Redis URL: {e}"))?;
         let mut conn = client
             .get_multiplexed_async_connection()
             .await
-            .map_err(|e| anyhow::anyhow!("Redis no disponible en {url}: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Redis unreachable at {url}: {e}"))?;
         redis::cmd("PING")
             .query_async::<String>(&mut conn)
             .await
-            .map_err(|e| anyhow::anyhow!("Redis PING falló: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Redis PING failed: {e}"))?;
         Ok(Self { client })
     }
 
@@ -199,14 +199,14 @@ pub async fn build(redis_url: Option<&str>) -> AnyQueue {
     if let Some(url) = redis_url {
         match RedisQueue::connect(url).await {
             Ok(q) => {
-                info!("queue: usando Redis en {url}");
+                info!("queue: using Redis at {url}");
                 return Arc::new(q);
             }
             Err(e) => {
-                warn!("queue: Redis no disponible ({e}), usando cola en memoria");
+                warn!("queue: Redis unavailable ({e}), falling back to in-memory queue");
             }
         }
     }
-    info!("queue: usando cola en memoria");
+    info!("queue: using in-memory queue");
     Arc::new(MemoryQueue::new())
 }

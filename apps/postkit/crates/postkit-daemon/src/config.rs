@@ -14,9 +14,9 @@ pub struct DaemonConfig {
     pub max_attempts: u32,
     #[serde(default = "default_retry_delay")]
     pub retry_delay_secs: u64,
-    /// Si se omite, el daemon no requiere autenticación (útil en dev local).
+    /// Omit to disable authentication (useful for local dev).
     pub api_key: Option<String>,
-    /// URL de Redis. Si se omite o la conexión falla, se usa una cola en memoria.
+    /// Redis URL. Omit or leave unreachable to fall back to the in-process queue.
     pub redis_url: Option<String>,
 }
 
@@ -27,12 +27,12 @@ fn default_retry_delay() -> u64 { 60 }
 impl DaemonConfig {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let text = std::fs::read_to_string(path)
-            .with_context(|| format!("no se encontró '{}'", path.display()))?;
-        toml::from_str(&text).with_context(|| format!("error al parsear '{}'", path.display()))
+            .with_context(|| format!("config file not found: '{}'", path.display()))?;
+        toml::from_str(&text).with_context(|| format!("failed to parse: '{}'", path.display()))
     }
 }
 
-// ─── App credentials (compartidas entre cuentas del mismo provider) ───────────
+// ─── App credentials (shared across accounts of the same provider) ────────────
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "provider", rename_all = "snake_case")]
@@ -42,7 +42,7 @@ pub enum AppConfig {
         api_secret: String,
     },
     Meta {
-        /// App ID y secret de Meta (opcionales; necesarios para rotation de tokens de usuario).
+        /// Meta App ID and secret (optional; required for user token rotation).
         #[serde(default)]
         app_id: Option<String>,
         #[serde(default)]
@@ -50,7 +50,7 @@ pub enum AppConfig {
     },
 }
 
-// ─── Account credentials (por cuenta) ────────────────────────────────────────
+// ─── Account credentials (per account) ───────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "provider", rename_all = "snake_case")]
@@ -60,20 +60,20 @@ pub enum AccountConfig {
         app_password: String,
     },
     X {
-        /// Referencia a una entrada en [apps].
+        /// Reference to an entry in [apps].
         app: String,
         access_token: String,
         access_token_secret: String,
     },
     FacebookPage {
-        /// Referencia a una entrada en [apps] (tipo meta).
+        /// Reference to an entry in [apps] (meta type).
         #[allow(dead_code)]
         app: String,
         page_id: String,
         page_access_token: String,
     },
     Instagram {
-        /// Referencia a una entrada en [apps] (tipo meta).
+        /// Reference to an entry in [apps] (meta type).
         #[allow(dead_code)]
         app: String,
         ig_user_id: String,

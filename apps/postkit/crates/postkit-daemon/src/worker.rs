@@ -20,14 +20,14 @@ pub async fn run(
     mut shutdown: watch::Receiver<bool>,
 ) {
     info!(
-        "worker iniciado (poll={}s, max_attempts={}, retry_delay={}s)",
+        "worker started (poll={}s, max_attempts={}, retry_delay={}s)",
         poll_secs, max_attempts, retry_delay_secs
     );
     loop {
         match queue.pop_due(10).await {
             Ok(ids) if !ids.is_empty() => match store.claim_by_ids(&ids).await {
                 Ok(posts) if !posts.is_empty() => {
-                    info!("worker: {} posts reclamados", posts.len());
+                    info!("worker: {} posts claimed", posts.len());
                     for post in posts {
                         let store = store.clone();
                         let providers = providers.clone();
@@ -40,13 +40,13 @@ pub async fn run(
                                         id,
                                         account,
                                         url = url.as_deref().unwrap_or("-"),
-                                        "publicado"
+                                        "published"
                                     );
                                     let _ = store.mark_published(id, url.as_deref()).await;
                                 }
                                 Err(e) => {
                                     let attempt = post.attempts + 1;
-                                    warn!(id, account, attempt, error = %e, "fallo en publicación");
+                                    warn!(id, account, attempt, error = %e, "publish failed");
                                     let _ = store
                                         .attempt_or_fail(
                                             id,
@@ -61,7 +61,7 @@ pub async fn run(
                     }
                 }
                 Ok(_) => {}
-                Err(e) => error!("worker: error reclamando posts: {e}"),
+                Err(e) => error!("worker: failed to claim posts: {e}"),
             },
             Ok(_) => {}
             Err(e) => error!("worker: error en pop_due: {e}"),
@@ -76,12 +76,12 @@ pub async fn run(
             _ = sleep(Duration::from_secs(sleep_secs)) => {}
             _ = queue.wait_for_activity() => {}
             _ = shutdown.changed() => {
-                info!("worker: señal de cierre recibida, deteniendo");
+                info!("worker: shutdown signal received, stopping");
                 break;
             }
         }
     }
-    info!("worker detenido");
+    info!("worker stopped");
 }
 
 async fn publish(
@@ -90,7 +90,7 @@ async fn publish(
 ) -> anyhow::Result<Option<String>> {
     let provider = providers
         .get(&post.account_id)
-        .ok_or_else(|| anyhow::anyhow!("cuenta desconocida: {}", post.account_id))?;
+        .ok_or_else(|| anyhow::anyhow!("unknown account: {}", post.account_id))?;
     let source: postkit_core::SourcePost = serde_json::from_str(&post.source_post)?;
     let resolved = source.resolve(provider.kind());
     let prepared = provider.compose(&resolved)?;
