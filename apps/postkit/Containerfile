@@ -1,14 +1,10 @@
-# Expects pre-built binaries in the build context:
-#   postkit          — the CLI binary
+# Expects the pre-built daemon binary in the build context:
 #   postkit-daemon   — the daemon binary
 #
 # Build locally after cargo build --release:
-#   docker build --target daemon -t postkit-daemon .
-#   docker build --target cli   -t postkit        .
+#   docker build -t postkit .
 
-# ─── daemon ──────────────────────────────────────────────────────────────────
-
-FROM debian:bookworm-slim AS daemon
+FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -19,15 +15,3 @@ EXPOSE 8080
 
 ENTRYPOINT ["./postkit-daemon"]
 CMD ["--config", "/config/daemon.toml"]
-
-# ─── cli ─────────────────────────────────────────────────────────────────────
-
-FROM debian:bookworm-slim AS cli
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-COPY postkit .
-
-VOLUME ["/config"]
-
-ENTRYPOINT ["./postkit"]
