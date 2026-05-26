@@ -1,35 +1,17 @@
-FROM rust:slim AS builder
-WORKDIR /app
+# Expects the pre-built daemon binary in the build context:
+#   postkit-daemon   — the daemon binary
+#
+# Build locally after cargo build --release:
+#   docker build -t postkit .
 
-RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
-
-COPY Cargo.toml Cargo.lock ./
-COPY crates/ crates/
-
-RUN cargo build --release --bin postkit --bin postkit-daemon
-
-# ─── daemon ──────────────────────────────────────────────────────────────────
-
-FROM debian:bookworm-slim AS daemon
+FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=builder /app/target/release/postkit-daemon .
+COPY postkit-daemon .
 
 VOLUME ["/data", "/config"]
 EXPOSE 8080
 
 ENTRYPOINT ["./postkit-daemon"]
 CMD ["--config", "/config/daemon.toml"]
-
-# ─── cli ─────────────────────────────────────────────────────────────────────
-
-FROM debian:bookworm-slim AS cli
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-COPY --from=builder /app/target/release/postkit .
-
-VOLUME ["/config"]
-
-ENTRYPOINT ["./postkit"]
