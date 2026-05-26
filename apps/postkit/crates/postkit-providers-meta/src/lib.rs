@@ -6,9 +6,9 @@
 //! Facebook Page: binary photo upload + feed post.
 //! Instagram: URL-based media containers (requires public URL in MediaRef.url) + two-step publish.
 //!
-//! Token rotation (opt-in): si `with_app_credentials(app_id, app_secret)` está configurado,
-//! `ensure_fresh_token()` intercambia el token vía `fb_exchange_token` y persiste el resultado
-//! en el `TokenSink` proporcionado. El daemon llama a esto al arrancar y periódicamente.
+//! Token rotation (opt-in): when `with_app_credentials(app_id, app_secret)` is configured,
+//! `ensure_fresh_token()` exchanges the token via `fb_exchange_token` and persists the result
+//! in the provided `TokenSink`. The daemon calls this at startup and periodically.
 
 use std::sync::Arc;
 
@@ -27,13 +27,13 @@ const FB_MAX_GRAPHEMES: usize = 63_206;
 const FB_MAX_IMAGES: usize = 10;
 const IG_MAX_GRAPHEMES: usize = 2_200;
 const IG_MAX_IMAGES: usize = 10;
-/// Tiempo asumido de validez tras un `fb_exchange_token` (Meta no devuelve expires_in aquí).
-const META_TOKEN_TTL_SECS: i64 = 60 * 24 * 3600; // 60 días
+// Assumed validity period after an `fb_exchange_token` exchange (Meta does not return expires_in here).
+const META_TOKEN_TTL_SECS: i64 = 60 * 24 * 3600; // 60 days
 
-// ─── Funciones auxiliares compartidas ────────────────────────────────────────
+// ─── Shared helper functions ──────────────────────────────────────────────────
 
-/// Devuelve `true` si el error proviene de un token OAuth caducado o inválido.
-/// Meta devuelve HTTP 400/401 con `{"error":{"type":"OAuthException",...}}`.
+/// Returns `true` if the error originates from an expired or invalid OAuth token.
+/// Meta returns HTTP 400/401 with `{"error":{"type":"OAuthException",...}}`.
 fn is_oauth_err(e: &anyhow::Error) -> bool {
     if let Some(re) = e.downcast_ref::<reqwest::Error>() {
         if re
@@ -47,7 +47,7 @@ fn is_oauth_err(e: &anyhow::Error) -> bool {
     msg.contains("OAuthException") || msg.contains("Invalid OAuth")
 }
 
-/// Intercambia un token por uno de larga duración via `fb_exchange_token`.
+/// Exchanges a token for a long-lived one via `fb_exchange_token`.
 async fn exchange_token(
     http: &Client,
     app_id: &str,
@@ -80,7 +80,7 @@ pub struct FacebookPage {
     account_id: String,
     page_id: String,
     token: Arc<RwLock<String>>,
-    /// (app_id, app_secret) necesario para rotation de tokens de usuario.
+    /// (app_id, app_secret) required for user token rotation.
     app_credentials: Option<(String, String)>,
     token_sink: Option<Arc<dyn TokenSink>>,
     http: Client,
@@ -108,8 +108,8 @@ impl FacebookPage {
         self
     }
 
-    /// Intercambia el token por uno de larga duración y persiste el resultado.
-    /// Devuelve `true` si el token fue renovado; `false` si no hay `app_credentials`.
+    /// Exchanges the token for a long-lived one and persists the result.
+    /// Returns `true` if the token was refreshed; `false` if no `app_credentials` are set.
     pub async fn ensure_fresh_token(&self) -> anyhow::Result<bool> {
         let Some((ref app_id, ref app_secret)) = self.app_credentials else {
             return Ok(false);
@@ -238,7 +238,7 @@ impl Provider for FacebookPage {
         }
         let name = body["name"]
             .as_str()
-            .ok_or_else(|| anyhow::anyhow!("respuesta inesperada: {body}"))?
+            .ok_or_else(|| anyhow::anyhow!("unexpected response: {body}"))?
             .to_string();
         let handle = body["username"]
             .as_str()
@@ -256,14 +256,14 @@ impl Provider for FacebookPage {
         let mut text = post.text.clone();
         if text.graphemes(true).count() > FB_MAX_GRAPHEMES {
             anyhow::bail!(
-                "Facebook: texto demasiado largo ({} grafemas, máx {})",
+                "Facebook: text too long ({} graphemes, max {})",
                 text.graphemes(true).count(),
                 FB_MAX_GRAPHEMES
             );
         }
         if post.media.len() > FB_MAX_IMAGES {
             anyhow::bail!(
-                "Facebook: máximo {} imágenes, se proporcionaron {}",
+                "Facebook: maximum {} images, {} provided",
                 FB_MAX_IMAGES,
                 post.media.len()
             );
@@ -318,7 +318,7 @@ pub struct Instagram {
     account_id: String,
     ig_user_id: String,
     token: Arc<RwLock<String>>,
-    /// (app_id, app_secret) necesario para rotation de tokens de usuario.
+    /// (app_id, app_secret) required for user token rotation.
     app_credentials: Option<(String, String)>,
     token_sink: Option<Arc<dyn TokenSink>>,
     http: Client,
@@ -346,8 +346,8 @@ impl Instagram {
         self
     }
 
-    /// Intercambia el token por uno de larga duración y persiste el resultado.
-    /// Devuelve `true` si el token fue renovado; `false` si no hay `app_credentials`.
+    /// Exchanges the token for a long-lived one and persists the result.
+    /// Returns `true` if the token was refreshed; `false` if no `app_credentials` are set.
     pub async fn ensure_fresh_token(&self) -> anyhow::Result<bool> {
         let Some((ref app_id, ref app_secret)) = self.app_credentials else {
             return Ok(false);
@@ -466,7 +466,7 @@ impl Instagram {
         let media_id = if media_refs.len() == 1 {
             let url = url_map
                 .get(&media_refs[0])
-                .ok_or_else(|| anyhow::anyhow!("Instagram: URL no encontrada para img0"))?;
+                .ok_or_else(|| anyhow::anyhow!("Instagram: URL not found for img0"))?;
             let creation_id = self.create_container(url, Some(text), false).await?;
             self.publish_container(&creation_id).await?
         } else {
@@ -474,7 +474,7 @@ impl Instagram {
             for ref_id in media_refs {
                 let url = url_map
                     .get(ref_id)
-                    .ok_or_else(|| anyhow::anyhow!("Instagram: URL no encontrada para {ref_id}"))?;
+                    .ok_or_else(|| anyhow::anyhow!("Instagram: URL not found for {ref_id}"))?;
                 let id = self.create_container(url, None, true).await?;
                 children.push(id);
             }
@@ -535,7 +535,7 @@ impl Provider for Instagram {
         let username = body["username"]
             .as_str()
             .or_else(|| body["name"].as_str())
-            .ok_or_else(|| anyhow::anyhow!("respuesta inesperada: {body}"))?
+            .ok_or_else(|| anyhow::anyhow!("unexpected response: {body}"))?
             .to_string();
         let display_name = body["name"].as_str().map(str::to_string);
         Ok(AccountInfo {
@@ -550,24 +550,24 @@ impl Provider for Instagram {
         let mut text = post.text.clone();
         if text.graphemes(true).count() > IG_MAX_GRAPHEMES {
             anyhow::bail!(
-                "Instagram: caption demasiado largo ({} grafemas, máx {})",
+                "Instagram: caption too long ({} graphemes, max {})",
                 text.graphemes(true).count(),
                 IG_MAX_GRAPHEMES
             );
         }
         if post.media.is_empty() {
-            anyhow::bail!("Instagram: se requiere al menos una imagen");
+            anyhow::bail!("Instagram: at least one image is required");
         }
         if post.media.len() > IG_MAX_IMAGES {
             anyhow::bail!(
-                "Instagram: máximo {} imágenes, se proporcionaron {}",
+                "Instagram: maximum {} images, {} provided",
                 IG_MAX_IMAGES,
                 post.media.len()
             );
         }
         for (i, m) in post.media.iter().enumerate() {
             if m.url.is_none() {
-                anyhow::bail!("Instagram: imagen {i} no tiene URL pública (campo `url` requerido)");
+                anyhow::bail!("Instagram: image {i} has no public URL (field `url` required)");
             }
         }
         if !post.hashtags.is_empty() {

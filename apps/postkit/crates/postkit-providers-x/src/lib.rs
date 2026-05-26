@@ -1,11 +1,11 @@
-//! X (Twitter) provider, usando X API v2 con OAuth 1.0a (HMAC-SHA1).
+//! X (Twitter) provider using X API v2 with OAuth 1.0a (HMAC-SHA1).
 //!
-//! Notas:
-//! - Auth: OAuth 1.0a con app credentials + access token de usuario.
-//! - Texto: max 280 caracteres (conteo por grafemas; X en realidad usa NFC+weighting
-//!   pero para posts normales el conteo simple es suficiente).
-//! - Media: upload a v1.1 (multipart/form-data), tweet a v2 (JSON).
-//! - post_url usa /i/web/status/{id} que no requiere conocer el @handle.
+//! Notes:
+//! - Auth: OAuth 1.0a with app credentials + user access token.
+//! - Text: max 280 characters (grapheme count; X actually uses NFC+weighting
+//!   but simple counting is sufficient for normal posts).
+//! - Media: upload via v1.1 (multipart/form-data), tweet via v2 (JSON).
+//! - post_url uses /i/web/status/{id} which does not require knowing the @handle.
 
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -51,9 +51,9 @@ impl X {
         }
     }
 
-    /// Genera el header Authorization OAuth 1.0a para una petición.
-    /// `extra_params`: parámetros de query/form que deben entrar en la firma
-    /// (no incluir para multipart/form-data ni para JSON bodies).
+    /// Builds the OAuth 1.0a Authorization header for a request.
+    /// `extra_params`: query/form parameters that must be included in the signature
+    /// (omit for multipart/form-data and JSON bodies).
     fn oauth_header(&self, method: &str, url: &str, extra_params: &[(&str, &str)]) -> String {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -76,7 +76,7 @@ impl X {
             ("oauth_version", "1.0"),
         ];
 
-        // Juntamos oauth + extra params, percent-encoded, ordenados.
+        // Merge oauth + extra params, percent-encoded, sorted.
         let mut all: Vec<(String, String)> = oauth_fields
             .iter()
             .map(|(k, v)| (pct(k), pct(v)))
@@ -127,13 +127,13 @@ impl X {
         res["media_id_string"]
             .as_str()
             .map(|s| s.to_string())
-            .ok_or_else(|| anyhow::anyhow!("X: no media_id_string en respuesta de upload"))
+            .ok_or_else(|| anyhow::anyhow!("X: no media_id_string in upload response"))
     }
 }
 
 // RFC 3986 §2.3: unreserved = ALPHA / DIGIT / "-" / "." / "_" / "~"
-// OAuth requires encoding everything else. NON_ALPHANUMERIC encodes "-._~" por
-// error — esta constante los deja sin codificar como exige la spec.
+// OAuth requires encoding everything else. NON_ALPHANUMERIC incorrectly encodes "-._~"
+// — this constant leaves them unencoded as the spec requires.
 const OAUTH_ENCODE: &AsciiSet = &CONTROLS
     .add(b' ')
     .add(b'!')
@@ -181,8 +181,8 @@ impl Provider for X {
     }
 
     async fn verify(&self) -> anyhow::Result<AccountInfo> {
-        // v1.1 verify_credentials funciona en Free tier (write-only apps);
-        // GET /2/users/me requiere al menos Read access en v2.
+        // v1.1 verify_credentials works on the Free tier (write-only apps);
+        // GET /2/users/me requires at least Read access on v2.
         let url = format!("{API_BASE}/1.1/account/verify_credentials.json");
         let auth = self.oauth_header("GET", &url, &[]);
 
@@ -229,11 +229,11 @@ impl Provider for X {
 
         let graphemes = text.graphemes(true).count();
         if graphemes > MAX_CHARS {
-            anyhow::bail!("X: texto de {graphemes} chars, máximo {MAX_CHARS}");
+            anyhow::bail!("X: text is {graphemes} chars, maximum is {MAX_CHARS}");
         }
 
         if post.media.len() > MAX_IMAGES {
-            anyhow::bail!("X: max {MAX_IMAGES} imágenes, recibidas {}", post.media.len());
+            anyhow::bail!("X: max {MAX_IMAGES} images, received {}", post.media.len());
         }
 
         let mut steps = Vec::new();
@@ -241,7 +241,7 @@ impl Provider for X {
         for (i, m) in post.media.iter().enumerate() {
             let ref_id = format!("img{i}");
             if m.alt.is_none() {
-                warnings.push(format!("Imagen {i} sin alt text"));
+                warnings.push(format!("Image {i} missing alt text"));
             }
             steps.push(Step::UploadMedia {
                 path: m.path.clone(),
@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn compose_no_facets_in_steps() {
-        // X no usa facets AT — el array debe estar vacío
+        // X does not use AT facets — the array must be empty
         let result = provider()
             .compose(&src("Visit https://example.com"))
             .unwrap();

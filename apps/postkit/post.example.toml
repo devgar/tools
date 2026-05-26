@@ -1,21 +1,20 @@
-# Ejemplo de SourcePost. Uso: postkit compose post.example.toml
+# Example post file. Usage: postkit compose post.example.toml
 
-text = "Probando postkit, un scheduler multi-red en Rust 🦀. Código en https://github.com/devgar/tools"
-
+text     = "Testing postkit, a multi-platform scheduler in Rust 🦀. Code at https://github.com/devgar/tools"
 hashtags = ["rust", "opensource"]
 
-# Descomentar para incluir imágenes:
+# Uncomment to attach images:
 # [[media]]
-# path = "/home/gar/Pictures/demo.png"
-# alt = "Terminal mostrando el output de postkit verify"
+# path = "/path/to/image.png"
+# alt  = "Terminal showing the output of postkit verify"
 
-# Variaciones por plataforma (opcionales).
-# Cada sección sobreescribe los campos indicados para esa plataforma.
-# Las claves son: bluesky, x, meta_page, meta_instagram.
+# Optional per-platform overrides.
+# Each section overrides only the specified fields for that platform.
+# Valid keys: bluesky, x, meta_page, meta_instagram.
 
 # [platforms.x]
-# text = "Versión corta para X (máx 280 caract.) 🦀 https://github.com/devgar/tools"
+# text = "Short version for X (max 280 chars) 🦀 https://github.com/devgar/tools"
 
 # [platforms.bluesky]
-# text = "Versión larga para Bluesky con más contexto sobre el proyecto."
+# text     = "Longer version for Bluesky with more context."
 # hashtags = ["rust", "bluesky", "opensource"]

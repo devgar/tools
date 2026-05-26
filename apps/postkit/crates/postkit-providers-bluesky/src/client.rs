@@ -1,7 +1,7 @@
-//! AT Protocol client para Bluesky (bsky.social PDS).
+//! AT Protocol client for Bluesky (bsky.social PDS).
 //!
-//! Encapsula todo el protocolo XRPC: construcción de URLs, gestión de sesión,
-//! TTL del JWT, y todas las llamadas HTTP. `lib.rs` solo toca tipos de negocio.
+//! Encapsulates the full XRPC protocol: URL construction, session management,
+//! JWT TTL, and all HTTP calls. `lib.rs` only touches business types.
 
 use std::sync::Arc;
 
@@ -13,7 +13,7 @@ use tokio::sync::RwLock;
 
 const PDS: &str = "https://bsky.social";
 const ACCESS_JWT_TTL: std::time::Duration = std::time::Duration::from_secs(45 * 60);
-/// TTL conservador del refresh JWT de Bluesky (~90 días reales; usamos 80 para margen).
+// Conservative TTL for Bluesky's refresh JWT (~90 real days; using 80 for safety margin).
 const REFRESH_JWT_TTL_SECS: i64 = 80 * 24 * 3600;
 
 #[derive(Deserialize)]
@@ -79,7 +79,6 @@ impl BskyClient {
         self
     }
 
-    /// Persiste access_jwt + refresh_jwt tras createSession/refreshSession.
     fn persist_session(&self, session: &Session) {
         if let Some(ref sink) = self.token_sink {
             let sink = sink.clone();
@@ -95,7 +94,7 @@ impl BskyClient {
         }
     }
 
-    // ─── XRPC genéricos ───────────────────────────────────────────────────────
+    // ─── Generic XRPC ────────────────────────────────────────────────────────
 
     async fn xrpc_post<T: DeserializeOwned>(
         &self,
@@ -131,7 +130,7 @@ impl BskyClient {
             .await?)
     }
 
-    // ─── Sesión ───────────────────────────────────────────────────────────────
+    // ─── Session ─────────────────────────────────────────────────────────────
 
     pub(crate) async fn ensure_session(&self) -> anyhow::Result<Session> {
         {
@@ -157,7 +156,7 @@ impl BskyClient {
             return Ok(session);
         }
 
-        // Sin sesión en memoria: intentar con el refresh_jwt guardado en sink.
+        // No in-memory session: try with the refresh_jwt stored in the sink.
         if let Some(ref sink) = self.token_sink {
             if let Ok(Some(stored)) = sink.load(&self.account_id).await {
                 if let Some(ref refresh_jwt) = stored.refresh_token {
@@ -178,7 +177,7 @@ impl BskyClient {
                         Err(e) => {
                             tracing::debug!(
                                 account_id = %self.account_id,
-                                "refresh_jwt guardado caducado, re-autenticando: {e}"
+                                "stored refresh_jwt expired, re-authenticating: {e}"
                             );
                         }
                     }
@@ -199,10 +198,10 @@ impl BskyClient {
         Ok(session)
     }
 
-    // ─── Operaciones API ──────────────────────────────────────────────────────
+    // ─── API operations ───────────────────────────────────────────────────────
 
-    /// Sube bytes binarios y devuelve el objeto blob para embeder en un record.
-    /// Usa HTTP directo (no JSON body), por eso no pasa por xrpc_post.
+    /// Uploads raw bytes and returns the blob object to embed in a record.
+    /// Uses a direct HTTP request (not a JSON body), so it bypasses xrpc_post.
     pub(crate) async fn upload_blob(&self, bytes: Vec<u8>, mime: &str) -> anyhow::Result<Value> {
         #[derive(Deserialize)]
         struct Res {
@@ -223,7 +222,6 @@ impl BskyClient {
         Ok(res.blob)
     }
 
-    /// Resuelve @handle → DID via com.atproto.identity.resolveHandle.
     pub(crate) async fn resolve_handle(&self, handle: &str) -> anyhow::Result<String> {
         #[derive(Deserialize)]
         struct Res {
@@ -236,8 +234,8 @@ impl BskyClient {
         Ok(res.did)
     }
 
-    /// Reemplaza en-sitio los facets `_pending_mention` con menciones AT resueltas.
-    /// Los handles no resolubles se descartan silenciosamente.
+    /// Replaces `_pending_mention` facets in-place with resolved AT mentions.
+    /// Handles that cannot be resolved are silently discarded.
     pub(crate) async fn resolve_mentions(&self, facets: &mut Value) {
         let Some(arr) = facets.as_array_mut() else {
             return;
@@ -262,7 +260,6 @@ impl BskyClient {
         }
     }
 
-    /// Crea un record `app.bsky.feed.post` en el repo del usuario autenticado.
     pub(crate) async fn create_record(&self, record: Value) -> anyhow::Result<CreateRecordResult> {
         let s = self.ensure_session().await?;
         let raw: Value = self

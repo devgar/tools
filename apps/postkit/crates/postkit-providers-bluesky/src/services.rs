@@ -1,10 +1,10 @@
-//! Servicios de Bluesky: lógica de compose/execute extraída del Provider.
+//! Bluesky services: compose/execute logic extracted from the Provider.
 //!
-//! Dos capas:
-//! - Funciones puras (`build_post_text`, `prepare_media_steps`, `build_text_steps`)
-//!   que no necesitan I/O y se pueden llamar directamente desde el Provider.
-//! - Métodos adicionales sobre `Bluesky` (`upload_media`, `publish_steps`, `post_record`)
-//!   que necesitan `self.client` y se llaman como `self.método()` desde el Provider.
+//! Two layers:
+//! - Pure functions (`build_post_text`, `prepare_media_steps`, `build_text_steps`)
+//!   that require no I/O and can be called directly from the Provider.
+//! - Additional methods on `Bluesky` (`upload_media`, `publish_steps`, `post_record`)
+//!   that need `self.client` and are called as `self.method()` from the Provider.
 
 use std::collections::HashMap;
 
@@ -17,9 +17,9 @@ use super::Bluesky;
 
 pub(crate) type BlobMap = HashMap<String, (Value, Option<String>)>;
 
-// ─── Funciones puras ──────────────────────────────────────────────────────────
+// ─── Pure functions ───────────────────────────────────────────────────────────
 
-/// Añade hashtags al texto con separador de párrafo.
+/// Appends hashtags to the text with a paragraph separator.
 pub(crate) fn build_post_text(text: &str, hashtags: &[String]) -> String {
     if hashtags.is_empty() {
         return text.to_string();
@@ -38,14 +38,14 @@ pub(crate) fn build_post_text(text: &str, hashtags: &[String]) -> String {
     result
 }
 
-/// Valida el límite de imágenes y construye los pasos `UploadMedia`.
-/// Devuelve `(upload_steps, media_refs, warnings)`.
+/// Validates the image limit and builds `UploadMedia` steps.
+/// Returns `(upload_steps, media_refs, warnings)`.
 pub(crate) fn prepare_media_steps(
     media: &[MediaRef],
     max: usize,
 ) -> anyhow::Result<(Vec<Step>, Vec<String>, Vec<String>)> {
     if media.len() > max {
-        anyhow::bail!("Bluesky: max {max} imágenes, recibidas {}", media.len());
+        anyhow::bail!("Bluesky: max {max} images, received {}", media.len());
     }
     let mut steps = Vec::new();
     let mut media_refs = Vec::new();
@@ -53,7 +53,7 @@ pub(crate) fn prepare_media_steps(
     for (i, m) in media.iter().enumerate() {
         let ref_id = format!("img{i}");
         if m.alt.is_none() {
-            warnings.push(format!("Imagen {i} sin alt text (accesibilidad)"));
+            warnings.push(format!("Image {i} missing alt text (accessibility)"));
         }
         steps.push(Step::UploadMedia {
             path: m.path.clone(),
@@ -65,8 +65,8 @@ pub(crate) fn prepare_media_steps(
     Ok((steps, media_refs, warnings))
 }
 
-/// Divide el texto en chunks y construye los pasos `CreatePost` + `ThreadContinue`.
-/// `media_refs` se asigna al primer paso (imagen del post raíz).
+/// Splits the text into chunks and builds `CreatePost` + `ThreadContinue` steps.
+/// `media_refs` is assigned to the first step (root post image).
 pub(crate) fn build_text_steps(text: &str, max: usize, media_refs: Vec<String>) -> Vec<Step> {
     let chunks = split_into_chunks(text, max);
     let mut steps = Vec::with_capacity(chunks.len());
@@ -159,10 +159,9 @@ fn guess_mime(path: &std::path::Path) -> &'static str {
     }
 }
 
-// ─── Métodos sobre Bluesky ────────────────────────────────────────────────────
+// ─── Methods on Bluesky ───────────────────────────────────────────────────────
 
 impl Bluesky {
-    /// Sube todos los blobs de media y devuelve el mapa ref_id → (blob, alt).
     pub(crate) async fn upload_media(&self, steps: &[Step]) -> anyhow::Result<BlobMap> {
         let mut blobs: BlobMap = Default::default();
         for step in steps {
@@ -175,8 +174,8 @@ impl Bluesky {
         Ok(blobs)
     }
 
-    /// Publica los pasos de texto en orden, encadenando el hilo si hay varios.
-    /// Devuelve el `PublishResult` del post raíz.
+    /// Publishes text steps in order, chaining the thread when there are multiple.
+    /// Returns the `PublishResult` of the root post.
     pub(crate) async fn publish_steps(
         &self,
         steps: &[Step],
@@ -217,10 +216,10 @@ impl Bluesky {
             }
         }
 
-        first_result.ok_or_else(|| anyhow::anyhow!("Bluesky execute: no hay paso CreatePost"))
+        first_result.ok_or_else(|| anyhow::anyhow!("Bluesky execute: no CreatePost step found"))
     }
 
-    /// Construye el JSON del record, resuelve menciones y lo publica.
+    /// Builds the record JSON, resolves mentions, and publishes it.
     async fn post_record(
         &self,
         text: &str,
