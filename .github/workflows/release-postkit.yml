@@ -78,6 +78,16 @@ jobs:
         working-directory: apps/postkit
         run: just package
 
+      - name: Upload binaries for image build
+        if: steps.changes.outputs.has_changes == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: postkit-binaries
+          path: |
+            apps/postkit/target/release/postkit
+            apps/postkit/target/release/postkit-daemon
+          retention-days: 1
+
       - name: Commit, tag & push to main
         if: steps.changes.outputs.has_changes == 'true'
         run: |
@@ -137,6 +147,15 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
 
+      - name: Download pre-built binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: postkit-binaries
+          path: dist
+
+      - name: Make binaries executable
+        run: chmod +x dist/postkit dist/postkit-daemon
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -150,25 +169,21 @@ jobs:
       - name: Build & push postkit-daemon
         uses: docker/build-push-action@v6
         with:
-          context: apps/postkit
+          context: dist
           file: apps/postkit/Containerfile
           target: daemon
           push: true
           tags: |
             ghcr.io/devgar/postkit-daemon:v${{ needs.release.outputs.version }}
             ghcr.io/devgar/postkit-daemon:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: Build & push postkit
         uses: docker/build-push-action@v6
         with:
-          context: apps/postkit
+          context: dist
           file: apps/postkit/Containerfile
           target: cli
           push: true
           tags: |
             ghcr.io/devgar/postkit:v${{ needs.release.outputs.version }}
             ghcr.io/devgar/postkit:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max

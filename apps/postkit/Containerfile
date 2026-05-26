@@ -1,12 +1,10 @@
-FROM rust:slim AS builder
-WORKDIR /app
-
-RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
-
-COPY Cargo.toml Cargo.lock ./
-COPY crates/ crates/
-
-RUN cargo build --release --bin postkit --bin postkit-daemon
+# Expects pre-built binaries in the build context:
+#   postkit          — the CLI binary
+#   postkit-daemon   — the daemon binary
+#
+# Build locally after cargo build --release:
+#   docker build --target daemon -t postkit-daemon .
+#   docker build --target cli   -t postkit        .
 
 # ─── daemon ──────────────────────────────────────────────────────────────────
 
@@ -14,7 +12,7 @@ FROM debian:bookworm-slim AS daemon
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=builder /app/target/release/postkit-daemon .
+COPY postkit-daemon .
 
 VOLUME ["/data", "/config"]
 EXPOSE 8080
@@ -28,7 +26,7 @@ FROM debian:bookworm-slim AS cli
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=builder /app/target/release/postkit .
+COPY postkit .
 
 VOLUME ["/config"]
 
