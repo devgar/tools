@@ -20,7 +20,7 @@ use tracing::{info, warn};
 #[derive(Parser)]
 #[command(name = "postkit-daemon")]
 struct Cli {
-    /// Ruta al archivo de configuración. Por defecto: ~/.config/postkit/daemon.toml
+    /// Path to the configuration file. Default: ~/.config/postkit/daemon.toml
     #[arg(long)]
     config: Option<PathBuf>,
 }
@@ -75,10 +75,10 @@ async fn main() -> Result<()> {
     let pending = store
         .list(&ListFilters { status: Some("pending".into()), ..Default::default() })
         .await?;
-    info!("sync: {} posts pendientes cargados en la cola", pending.len());
+    info!("sync: {} pending posts loaded into queue", pending.len());
     for post in &pending {
         if let Err(e) = queue.push(post.id, post.scheduled_at.timestamp()).await {
-            warn!(id = post.id, "sync: error al encolar post: {e}");
+            warn!(id = post.id, "sync: failed to enqueue post: {e}");
         }
     }
 
@@ -104,14 +104,14 @@ async fn main() -> Result<()> {
         shutdown_rx,
     ));
 
-    info!("postkit-daemon escuchando en {addr}");
+    info!("postkit-daemon listening on {addr}");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
 
     let _ = shutdown_tx.send(true);
-    info!("daemon detenido");
+    info!("daemon stopped");
     Ok(())
 }
 
@@ -135,14 +135,14 @@ async fn shutdown_signal() {
         _ = ctrl_c => {}
         _ = sigterm => {}
     }
-    info!("señal de cierre recibida");
+    info!("shutdown signal received");
 }
 
-/// Margen de renovación: si el token expira en menos de 7 días, se considera "a punto de caducar".
+/// Token is considered near-expiry when it expires within 7 days.
 const REFRESH_THRESHOLD_SECS: i64 = 7 * 24 * 3600;
 
-/// Devuelve `(token, fresco)` si existe en store y no ha expirado.
-/// `fresco = true` significa que tiene más de 7 días de validez restante → no hace falta renovar.
+/// Returns `(token, fresh)` if a credential exists in the store and has not expired.
+/// `fresh = true` means more than 7 days of validity remain — no refresh needed.
 async fn load_stored_token(store: &Store, account_id: &str) -> Option<(String, bool)> {
     let tokens = store.load_credential(account_id).await.ok()??;
     let now = chrono::Utc::now().timestamp();
@@ -173,7 +173,7 @@ async fn setup_meta_provider<P: MetaProvider>(
     }
 
     if let Err(e) = provider.ensure_fresh_token().await {
-        warn!(account = account_id, "error renovando token Meta en arranque: {e}");
+        warn!(account = account_id, "failed to refresh Meta token at startup: {e}");
     }
 
     Arc::new(provider)
@@ -198,9 +198,9 @@ async fn build_providers(
             AccountConfig::X { app, access_token, access_token_secret } => {
                 let AppConfig::X { api_key, api_secret } = apps
                     .get(&app)
-                    .ok_or_else(|| anyhow::anyhow!("app '{app}' no encontrada"))?
+                    .ok_or_else(|| anyhow::anyhow!("app '{app}' not found"))?
                 else {
-                    anyhow::bail!("app '{app}' no es de tipo x");
+                    anyhow::bail!("app '{app}' is not of type x");
                 };
                 out.insert(
                     id.clone(),

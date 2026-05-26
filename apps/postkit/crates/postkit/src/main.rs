@@ -104,9 +104,9 @@ fn build_providers(cfg: &Config) -> Result<HashMap<String, Arc<dyn Provider>>> {
                 let AppConfig::X { api_key, api_secret } = cfg
                     .apps
                     .get(app)
-                    .ok_or_else(|| anyhow::anyhow!("app '{app}' no encontrada"))?
+                    .ok_or_else(|| anyhow::anyhow!("app '{app}' not found"))?
                 else {
-                    anyhow::bail!("app '{app}' no es de tipo x");
+                    anyhow::bail!("app '{app}' is not of type x");
                 };
                 out.insert(
                     id.clone(),
