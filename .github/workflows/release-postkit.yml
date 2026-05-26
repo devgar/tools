@@ -61,16 +61,16 @@ jobs:
       - uses: cargo-bins/cargo-binstall@v1.17.9
         if: steps.changes.outputs.has_changes == 'true'
 
-      - name: Install cargo-bump & just
+      - name: Install just & cargo-workspaces
         if: steps.changes.outputs.has_changes == 'true'
-        run: cargo binstall cargo-bump just --no-confirm
+        run: cargo binstall just cargo-workspaces --no-confirm
 
       - name: Bump version
         if: steps.changes.outputs.has_changes == 'true'
         id: version
         working-directory: apps/postkit
         run: |
-          cargo bump ${{ steps.bump.outputs.type }}
+          cargo ws version --yes --all --no-git-commit ${{ steps.bump.outputs.type }}
           echo "next=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
 
       - name: Package

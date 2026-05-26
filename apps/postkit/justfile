@@ -42,11 +42,8 @@ release bump:
     git push origin "$branch"
     git checkout -
 
-# Bump version locally without triggering CI (requires cargo-bump)
+# Bump version locally without triggering CI (requires cargo-workspaces).
 # Usage: just release-local major|minor|patch
 release-local bump:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cargo bump {{bump}}
-    version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-    echo "→ v$version"
+    cargo ws version --yes --all --no-git-commit {{bump}}
+    @echo "→ v$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)"
