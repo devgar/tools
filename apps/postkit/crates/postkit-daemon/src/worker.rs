@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use postkit_core::Provider;
 use postkit_store::{ScheduledPost, Store};
 use tokio::{
-    sync::watch,
+    sync::{watch, RwLock},
     time::{sleep, Duration},
 };
 use tracing::{error, info, warn};
@@ -13,7 +13,7 @@ use crate::queue::AnyQueue;
 pub async fn run(
     store: Store,
     queue: AnyQueue,
-    providers: Arc<HashMap<String, Arc<dyn Provider>>>,
+    providers: Arc<RwLock<HashMap<String, Arc<dyn Provider>>>>,
     poll_secs: u64,
     max_attempts: u32,
     retry_delay_secs: u64,
@@ -30,7 +30,7 @@ pub async fn run(
                     info!("worker: {} posts claimed", posts.len());
                     for post in posts {
                         let store = store.clone();
-                        let providers = providers.clone();
+                        let providers = Arc::clone(&providers);
                         tokio::spawn(async move {
                             let id = post.id;
                             let account = post.account_id.clone();
@@ -64,7 +64,7 @@ pub async fn run(
                 Err(e) => error!("worker: failed to claim posts: {e}"),
             },
             Ok(_) => {}
-            Err(e) => error!("worker: error en pop_due: {e}"),
+            Err(e) => error!("worker: error in pop_due: {e}"),
         }
 
         let sleep_secs = match queue.next_due_in_secs().await {
@@ -86,10 +86,14 @@ pub async fn run(
 
 async fn publish(
     post: &ScheduledPost,
-    providers: &HashMap<String, Arc<dyn Provider>>,
+    providers: &RwLock<HashMap<String, Arc<dyn Provider>>>,
 ) -> anyhow::Result<Option<String>> {
+    // Clone the Arc to release the read lock before any async work.
     let provider = providers
+        .read()
+        .await
         .get(&post.account_id)
+        .cloned()
         .ok_or_else(|| anyhow::anyhow!("unknown account: {}", post.account_id))?;
     let source: postkit_core::SourcePost = serde_json::from_str(&post.source_post)?;
     let resolved = source.resolve(provider.kind());
@@ -197,16 +201,19 @@ mod tests {
         }
     }
 
-    fn providers_with(id: &str, p: Arc<dyn Provider>) -> HashMap<String, Arc<dyn Provider>> {
+    fn providers_with(
+        id: &str,
+        p: Arc<dyn Provider>,
+    ) -> RwLock<HashMap<String, Arc<dyn Provider>>> {
         let mut m = HashMap::new();
         m.insert(id.to_string(), p);
-        m
+        RwLock::new(m)
     }
 
     #[tokio::test]
     async fn publish_unknown_account_returns_error() {
         let post = make_post("ghost", valid_source());
-        let result = publish(&post, &HashMap::new()).await;
+        let result = publish(&post, &RwLock::new(HashMap::new())).await;
         assert!(result.unwrap_err().to_string().contains("unknown account"));
     }
 
