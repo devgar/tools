@@ -15,18 +15,26 @@ package: build
     cp target/release/postkit-daemon "postkit-daemon-v${version}-x86_64-linux"
     tar -czf "postkit-v${version}-x86_64-linux.tar.gz"        "postkit-v${version}-x86_64-linux"
     tar -czf "postkit-daemon-v${version}-x86_64-linux.tar.gz" "postkit-daemon-v${version}-x86_64-linux"
+    cargo run --bin generate-openapi > openapi.json
     sha256sum \
         "postkit-v${version}-x86_64-linux" \
         "postkit-v${version}-x86_64-linux.tar.gz" \
         "postkit-daemon-v${version}-x86_64-linux" \
-        "postkit-daemon-v${version}-x86_64-linux.tar.gz" > checksums.txt
+        "postkit-daemon-v${version}-x86_64-linux.tar.gz" \
+        openapi.json > checksums.txt
     echo "→ postkit-v${version}-x86_64-linux"
     echo "→ postkit-v${version}-x86_64-linux.tar.gz"
     echo "→ postkit-daemon-v${version}-x86_64-linux"
     echo "→ postkit-daemon-v${version}-x86_64-linux.tar.gz"
+    echo "→ openapi.json"
 
 test:
-    cargo test
+    cargo test --lib
+
+# Generate openapi.json from the current API definition
+openapi:
+    cargo run --bin generate-openapi > openapi.json
+    @echo "→ openapi.json"
 
 # Trigger a release via GitHub Actions
 # Usage: just release major|minor|patch

@@ -12,13 +12,14 @@ use chrono::{DateTime, Utc};
 use postkit_core::Provider;
 use postkit_store::{ListFilters, ScheduledPost, Store};
 use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 use utoipa::{IntoParams, OpenApi, ToSchema};
 
 use crate::queue::AnyQueue;
 
 pub struct AppState {
     pub store: Store,
-    pub providers: Arc<HashMap<String, Arc<dyn Provider>>>,
+    pub providers: Arc<RwLock<HashMap<String, Arc<dyn Provider>>>>,
     /// None → authentication disabled (local dev).
     pub api_key: Option<String>,
     pub queue: AnyQueue,
@@ -65,7 +66,7 @@ impl utoipa::Modify for ApiKeyAuth {
     modifiers(&ApiKeyAuth),
     info(title = "postkit API", version = env!("CARGO_PKG_VERSION")),
 )]
-struct ApiDoc;
+pub struct ApiDoc;
 
 #[utoipa::path(
     get,
@@ -168,11 +169,13 @@ async fn schedule_post(
     State(state): State<Arc<AppState>>,
     Json(body): Json<ScheduleBody>,
 ) -> Result<Json<IdResponse>, (StatusCode, String)> {
-    let provider = state.providers.get(&body.account_id).ok_or_else(|| {
-        (StatusCode::BAD_REQUEST, format!("unknown account: {}", body.account_id))
-    })?;
-
-    let provider_str = format!("{:?}", provider.kind()).to_lowercase();
+    let provider_str = {
+        let providers = state.providers.read().await;
+        let provider = providers.get(&body.account_id).ok_or_else(|| {
+            (StatusCode::BAD_REQUEST, format!("unknown account: {}", body.account_id))
+        })?;
+        format!("{:?}", provider.kind()).to_lowercase()
+    };
     let source_json = serde_json::to_string(&body.source_post)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -433,7 +436,7 @@ mod tests {
         let store = Store::open(":memory:").await.unwrap();
         Arc::new(AppState {
             store,
-            providers: Arc::new(HashMap::new()),
+            providers: Arc::new(RwLock::new(HashMap::new())),
             api_key: api_key.map(str::to_string),
             queue: crate::queue::build(None).await,
         })
@@ -445,7 +448,7 @@ mod tests {
         providers.insert("test".to_string(), Arc::new(MockProvider));
         Arc::new(AppState {
             store,
-            providers: Arc::new(providers),
+            providers: Arc::new(RwLock::new(providers)),
             api_key: None,
             queue: crate::queue::build(None).await,
         })

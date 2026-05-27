@@ -111,11 +111,14 @@ jobs:
             ```sh
             docker pull ghcr.io/devgar/postkit:v${{ steps.version.outputs.next }}
             ```
+
+            **OpenAPI spec:** `openapi.json` is attached — import it into Swagger UI, Postman, or any OpenAPI-compatible tool.
           files: |
             apps/postkit/postkit-v${{ steps.version.outputs.next }}-x86_64-linux
             apps/postkit/postkit-v${{ steps.version.outputs.next }}-x86_64-linux.tar.gz
             apps/postkit/postkit-daemon-v${{ steps.version.outputs.next }}-x86_64-linux
             apps/postkit/postkit-daemon-v${{ steps.version.outputs.next }}-x86_64-linux.tar.gz
+            apps/postkit/openapi.json
             apps/postkit/checksums.txt
 
       - name: Delete release branch

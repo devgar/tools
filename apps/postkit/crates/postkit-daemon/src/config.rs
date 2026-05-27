@@ -3,17 +3,36 @@ use std::{collections::HashMap, path::Path};
 use anyhow::Context as _;
 use serde::Deserialize;
 
+// ─── Backend selector ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "backend", rename_all = "snake_case")]
+pub enum SourceConfig {
+    File { path: String },
+    // Future variants:
+    // Sqlite { path: String },
+    // Postgresql { url: String },
+}
+
+// ─── Daemon config ────────────────────────────────────────────────────────────
+
 #[derive(Debug, Deserialize)]
 pub struct DaemonConfig {
     pub db_path: String,
     pub listen: String,
     #[serde(default = "default_poll")]
     pub poll_interval_secs: u64,
-    pub accounts_config: String,
+    /// Source for shared app credentials (X API keys, Meta App ID/secret, …).
+    pub apps: SourceConfig,
+    /// Source for per-account credentials (tokens, passwords, …).
+    pub accounts: SourceConfig,
     #[serde(default = "default_max_attempts")]
     pub max_attempts: u32,
     #[serde(default = "default_retry_delay")]
     pub retry_delay_secs: u64,
+    /// How often the watcher checks for credential changes (seconds).
+    #[serde(default = "default_reload")]
+    pub reload_interval_secs: u64,
     /// Omit to disable authentication (useful for local dev).
     pub api_key: Option<String>,
     /// Redis URL. Omit or leave unreachable to fall back to the in-process queue.
@@ -23,6 +42,7 @@ pub struct DaemonConfig {
 fn default_poll() -> u64 { 30 }
 fn default_max_attempts() -> u32 { 3 }
 fn default_retry_delay() -> u64 { 60 }
+fn default_reload() -> u64 { 60 }
 
 impl DaemonConfig {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
@@ -81,8 +101,10 @@ pub enum AccountConfig {
     },
 }
 
+// ─── Combined file parser (used by file-backed repositories) ─────────────────
+
 #[derive(Deserialize)]
-struct AccountsFile {
+pub struct AccountsFile {
     #[serde(default)]
     pub apps: HashMap<String, AppConfig>,
     #[serde(default)]
