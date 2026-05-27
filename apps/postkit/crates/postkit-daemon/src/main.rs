@@ -1,3 +1,5 @@
+//! postkit-daemon — HTTP scheduling daemon for postkit.
+
 mod config;
 mod queue;
 mod routes;
