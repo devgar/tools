@@ -45,5 +45,5 @@ release bump:
 # Bump version locally without triggering CI (requires cargo-workspaces).
 # Usage: just release-local major|minor|patch
 release-local bump:
-    cargo ws version --yes --all --no-git-commit {{bump}}
+    cargo ws version --yes --all --no-git-commit --force '*' {{bump}}
     @echo "→ v$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)"

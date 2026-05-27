@@ -70,7 +70,7 @@ jobs:
         id: version
         working-directory: apps/postkit
         run: |
-          cargo ws version --yes --all --no-git-commit ${{ steps.bump.outputs.type }}
+          cargo ws version --yes --all --no-git-commit --force '*' ${{ steps.bump.outputs.type }}
           echo "next=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
 
       - name: Package
