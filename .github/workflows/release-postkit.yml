@@ -35,21 +35,11 @@ jobs:
             || { echo "::error::Branch must end in major, minor or patch"; exit 1; }
           echo "type=$BUMP" >> "$GITHUB_OUTPUT"
 
-      - name: Check for changes since last tag
-        id: changes
-        run: |
-          LAST_TAG=$(git tag -l "postkit-v*" --sort=-version:refname | head -1)
-          COUNT=$(git log "${LAST_TAG:-HEAD~1}"..HEAD --oneline -- apps/postkit/ | wc -l | tr -d ' ')
-          echo "Commits since ${LAST_TAG:-"(none)"}: $COUNT"
-          echo "has_changes=$([[ $COUNT -gt 0 ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-
       - uses: dtolnay/rust-toolchain@nightly
-        if: steps.changes.outputs.has_changes == 'true'
         with:
           components: rustfmt,clippy
 
       - uses: actions/cache@v4
-        if: steps.changes.outputs.has_changes == 'true'
         with:
           path: |
             ~/.cargo/registry
@@ -59,27 +49,28 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - uses: cargo-bins/cargo-binstall@v1.17.9
-        if: steps.changes.outputs.has_changes == 'true'
 
       - name: Install just & cargo-workspaces
-        if: steps.changes.outputs.has_changes == 'true'
         run: cargo binstall just cargo-workspaces --no-confirm
 
       - name: Bump version
-        if: steps.changes.outputs.has_changes == 'true'
         id: version
         working-directory: apps/postkit
         run: |
-          cargo ws version --yes --all --no-git-commit --force '*' ${{ steps.bump.outputs.type }}
-          echo "next=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+          cargo ws version --yes --all --no-git-commit ${{ steps.bump.outputs.type }}
+          if git diff --quiet; then
+            echo "No changes detected by cargo-workspaces, skipping release"
+          else
+            echo "next=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Package
-        if: steps.changes.outputs.has_changes == 'true'
+        if: steps.version.outputs.next != ''
         working-directory: apps/postkit
         run: just package
 
       - name: Upload daemon binary for image build
-        if: steps.changes.outputs.has_changes == 'true'
+        if: steps.version.outputs.next != ''
         uses: actions/upload-artifact@v4
         with:
           name: postkit-binaries
@@ -87,7 +78,7 @@ jobs:
           retention-days: 1
 
       - name: Commit, tag & push to main
-        if: steps.changes.outputs.has_changes == 'true'
+        if: steps.version.outputs.next != ''
         run: |
           git add apps/postkit/Cargo.toml apps/postkit/Cargo.lock
           git commit -m "chore(apps/postkit): bump version to ${{ steps.version.outputs.next }}"
@@ -96,7 +87,7 @@ jobs:
           git push origin "postkit-v${{ steps.version.outputs.next }}"
 
       - name: Create GitHub Release
-        if: steps.changes.outputs.has_changes == 'true'
+        if: steps.version.outputs.next != ''
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "postkit-v${{ steps.version.outputs.next }}"
