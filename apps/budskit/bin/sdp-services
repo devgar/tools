@@ -1,0 +1,200 @@
+#!/usr/bin/python3
+"""sdp-services - list a Bluetooth device's RFCOMM/L2CAP services.
+
+A standalone SDP client over raw L2CAP, because Fedora dropped sdptool into
+bluez-deprecated and BlueZ exposes no SDP browse over D-Bus.
+
+Note that most vendor services are NOT in the public browse group - the CMF Buds
+publish six RFCOMM services and a plain browse returns none of them. So by
+default this searches a handful of useful patterns rather than just browsing.
+
+  sdp-services [MAC] [UUID ...]
+
+With no UUID it searches the public browse group, Serial Port (0x1101), and every
+UUID BlueZ already knows for the device - which is how the vendor services that
+sit outside the browse group get found. A UUID may be given as 16-bit ("1101"),
+32-bit ("00001101") or full 128-bit form.
+"""
+
+import re
+import socket
+import struct
+import subprocess
+import sys
+
+BASE_UUID_TAIL = bytes.fromhex("00001000800000805f9b34fb")
+SDP_PSM = 1
+PDU_SSA_REQ = 0x06
+PDU_SSA_RSP = 0x07
+
+DEFAULT_SEARCHES = ["1002", "1101"]  # PublicBrowseGroup, SerialPort
+
+WELL_KNOWN = {
+    0x1101: "Serial Port", 0x110A: "Audio Source", 0x110B: "Audio Sink",
+    0x110C: "AVRCP Target", 0x110D: "A2DP", 0x110E: "AVRCP",
+    0x110F: "AVRCP Controller", 0x111E: "Handsfree", 0x111F: "Handsfree AG",
+    0x1200: "PnP Information", 0x1203: "Generic Audio",
+    0x1800: "Generic Access", 0x1801: "Generic Attribute",
+}
+
+
+def normalise(uuid: str) -> bytes:
+    raw = bytes.fromhex(uuid.replace("-", ""))
+    if len(raw) == 2:
+        raw = b"\x00\x00" + raw
+    if len(raw) == 4:
+        raw += BASE_UUID_TAIL
+    if len(raw) != 16:
+        raise SystemExit(f"not a UUID: {uuid}")
+    return raw
+
+
+def parse_de(buf: bytes, i: int):
+    """Parse one SDP data element. Returns (value, next_index)."""
+    tag = buf[i]
+    typ, size_idx = tag >> 3, tag & 7
+    i += 1
+    if typ == 0:
+        return None, i
+    if size_idx <= 4:
+        n = {0: 1, 1: 2, 2: 4, 3: 8, 4: 16}[size_idx]
+    elif size_idx == 5:
+        n, i = buf[i], i + 1
+    elif size_idx == 6:
+        n, i = struct.unpack(">H", buf[i:i + 2])[0], i + 2
+    else:
+        n, i = struct.unpack(">I", buf[i:i + 4])[0], i + 4
+    raw, end = buf[i:i + n], i + n
+    if typ in (1, 2):
+        return int.from_bytes(raw, "big", signed=(typ == 2)), end
+    if typ == 3:
+        return ("uuid", raw), end
+    if typ in (4, 8):
+        return raw.decode("utf-8", "replace"), end
+    if typ == 5:
+        return bool(raw[0]), end
+    if typ in (6, 7):
+        out, j = [], i
+        while j < end:
+            value, j = parse_de(buf, j)
+            out.append(value)
+        return out, end
+    return ("raw", raw), end
+
+
+def uuid_str(raw: bytes) -> str:
+    if len(raw) <= 4:
+        short = int.from_bytes(raw, "big")
+        return f"0x{short:04x}" + (f" ({WELL_KNOWN[short]})" if short in WELL_KNOWN else "")
+    if raw[4:] == BASE_UUID_TAIL:
+        return uuid_str(raw[:4])
+    h = raw.hex()
+    return f"{h[0:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}"
+
+
+def short_uuid(value):
+    if not (isinstance(value, tuple) and value[0] == "uuid"):
+        return None
+    raw = value[1]
+    if len(raw) == 16 and raw[4:] == BASE_UUID_TAIL:
+        raw = raw[:4]
+    return int.from_bytes(raw, "big") if len(raw) <= 4 else None
+
+
+def search(mac: str, uuid: bytes, timeout: float = 10.0) -> list:
+    pattern = bytes([0x18 | 4]) + uuid
+    blob, cont, tid = b"", b"", 1
+    sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_SEQPACKET, socket.BTPROTO_L2CAP)
+    sock.settimeout(timeout)
+    try:
+        sock.connect((mac, SDP_PSM))
+        while True:
+            params = (
+                b"\x35" + bytes([len(pattern)]) + pattern
+                + struct.pack(">H", 0x0280)
+                + b"\x35\x05\x0a\x00\x00\xff\xff"     # all attributes
+                + bytes([len(cont)]) + cont
+            )
+            sock.send(struct.pack(">BHH", PDU_SSA_REQ, tid, len(params)) + params)
+            resp = sock.recv(4096)
+            if len(resp) < 5 or resp[0] != PDU_SSA_RSP:
+                if resp[:1] == b"\x01":
+                    raise SystemExit(f"SDP error 0x{resp[5:7].hex()} for {uuid_str(uuid)}")
+                return []
+            plen = struct.unpack(">H", resp[3:5])[0]
+            body = resp[5:5 + plen]
+            alen = struct.unpack(">H", body[:2])[0]
+            blob += body[2:2 + alen]
+            cont_len = body[2 + alen]
+            cont = body[3 + alen:3 + alen + cont_len]
+            tid += 1
+            if not cont:
+                break
+    finally:
+        sock.close()
+    if not blob:
+        return []
+    records, _ = parse_de(blob, 0)
+    return records or []
+
+
+def bluez_uuids(mac: str) -> list[str]:
+    """Ask BlueZ which UUIDs it saw on the device - it caches ones no browse returns."""
+    path = "/org/bluez/hci0/dev_" + mac.replace(":", "_").upper()
+    try:
+        out = subprocess.run(
+            ["busctl", "--no-pager", "get-property", "org.bluez", path,
+             "org.bluez.Device1", "UUIDs"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return re.findall(r'"([0-9a-fA-F-]{36})"', out)
+
+
+def describe(record: list) -> tuple[int, str, str, str]:
+    attrs = {record[k]: record[k + 1] for k in range(0, len(record) - 1, 2)}
+    handle = attrs.get(0x0000, 0)
+    name = (attrs.get(0x0100) or "").rstrip("\x00")
+    classes = [uuid_str(c[1]) for c in attrs.get(0x0001, []) or [] if isinstance(c, tuple)]
+    channel = psm = None
+    for proto in attrs.get(0x0004, []) or []:
+        if not isinstance(proto, list) or not proto:
+            continue
+        pid = short_uuid(proto[0])
+        if pid == 0x0003 and len(proto) > 1:
+            channel = proto[1]
+        elif pid == 0x0100 and len(proto) > 1:
+            psm = proto[1]
+    where = f"RFCOMM channel {channel}" if channel is not None else \
+            f"L2CAP PSM {psm}" if psm is not None else "-"
+    return handle, name or "(unnamed)", where, ", ".join(classes)
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    mac = args[0] if args and ":" in args[0] else "3C:B0:ED:D1:A4:AB"
+    uuids = [a for a in args if ":" not in a]
+    if not uuids:
+        uuids = DEFAULT_SEARCHES + bluez_uuids(mac)
+
+    seen: dict[int, tuple[str, str, str]] = {}
+    for uuid in dict.fromkeys(uuids):
+        for record in search(mac, normalise(uuid)):
+            if isinstance(record, list):
+                handle, *rest = describe(record)
+                seen[handle] = tuple(rest)
+    if not seen:
+        print(f"no services found on {mac}", file=sys.stderr)
+        return 1
+    w_name = max(len(v[0]) for v in seen.values())
+    w_where = max(len(v[1]) for v in seen.values())
+    print(f"{mac} - {len(seen)} service records\n")
+    for handle in sorted(seen):
+        name, where, classes = seen[handle]
+        print(f"0x{handle:08x}  {name:{w_name}s}  {where:{w_where}s}  {classes}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

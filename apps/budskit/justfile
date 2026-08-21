@@ -1,0 +1,52 @@
+alias i := install
+alias r := run-daemon
+alias rd := run-daemon
+alias w := watch
+alias b := battery
+alias t := test
+
+# Run the daemon in the foreground (stop the service first: systemctl --user stop cmf-budsd)
+run-daemon:
+	./bin/cmf-budsd
+
+# Follow state changes through the daemon
+watch:
+	./bin/cmf-buds watch
+
+# Per-component battery
+battery:
+	./bin/cmf-buds
+
+# Everything the buds will tell us
+info:
+	./bin/cmf-buds info
+
+# Syntax check: byte-compile the python, parse the shell
+test:
+	#!/usr/bin/env bash
+	set -euo pipefail
+	/usr/bin/python3 -m py_compile bin/cmfbuds.py bin/cmf-buds bin/cmf-budsd bin/sdp-services
+	bash -n bin/bt-reconnect
+	rm -rf bin/__pycache__
+	echo "→ ok"
+
+# Build the nix package and smoke-test the binaries from the store
+build:
+	#!/usr/bin/env bash
+	set -euo pipefail
+	nix build ../..#budskit
+	./result/bin/cmf-buds --help > /dev/null
+	./result/bin/cmf-budsd --help > /dev/null
+	head -1 ./result/bin/cmf-buds
+	echo "→ ok"
+
+# Dev install: symlink into ~/.local/bin.
+# Prefer the nix package via home-manager for anything permanent.
+install:
+	#!/usr/bin/env bash
+	set -euo pipefail
+	mkdir -p "$HOME/.local/bin"
+	for t in cmf-buds cmf-budsd bt-reconnect sdp-services; do
+	  ln -sfn "$PWD/bin/$t" "$HOME/.local/bin/$t"
+	done
+	echo "→ linked into ~/.local/bin"

@@ -1,0 +1,660 @@
+#!/usr/bin/python3
+"""cmf-budsd - own the earbuds' NTAPP link and serve their state to many clients.
+
+The buds accept exactly ONE RFCOMM connection on the NTAPP channel and take
+seconds to release it, so a CLI, a status bar and a Quickshell panel cannot each
+open their own. This daemon holds the single link and fans state out as
+newline-delimited JSON over a Unix socket.
+
+Read-only by construction: the write range (0xf...) is unreachable through the
+socket, whatever a client asks for.
+
+  cmf-budsd                          run in the foreground
+  cmf-budsd --socket PATH            override the socket location
+  cmf-budsd --allow-raw              permit {"cmd":"raw"} queries (0xc000-0xcfff)
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import fcntl
+import json
+import os
+import selectors
+import signal
+import socket
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from cmfbuds import (  # noqa: E402
+    CMD_ANC_MODE, CMD_BATTERY, CMD_COMPONENT_INFO, CMD_FIRMWARE,
+    CMD_PAIRED_DEVICES, CMD_PROTOCOL_VERSION, CMD_WEAR_STATE, COMPONENT_ORDER,
+    DEFAULT_MAC, EVT_ANC_MODE, EVT_BATTERY, EVT_WEAR_STATE, QUERY_RANGE, Buds,
+    BudsBusy, BudsError, BudsGone, bluez_connected, decode_anc, decode_battery,
+    decode_component_info, decode_paired, decode_wear, load_cache, save_cache,
+)
+
+RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+DEFAULT_SOCKET = RUNTIME_DIR / "cmf-buds.sock"
+
+MAX_OUTBOX = 65536      # a client not reading this much is broken, not slow
+MAX_LINE = 8192
+PUBLISH_DEBOUNCE = 0.2  # coalesce a poll reply and the push that follows it
+
+
+def log(*parts) -> None:
+    print(time.strftime("%H:%M:%S"), *parts, file=sys.stderr, flush=True)
+
+
+class ClientDead(Exception):
+    pass
+
+
+class Backoff:
+    """Fixed schedule, last value repeating."""
+
+    def __init__(self, *steps: float):
+        self.steps = steps
+        self.i = 0
+
+    def next(self) -> float:
+        value = self.steps[min(self.i, len(self.steps) - 1)]
+        self.i += 1
+        return value
+
+    def reset(self) -> None:
+        self.i = 0
+
+
+class Client:
+    def __init__(self, sock: socket.socket, sel: selectors.BaseSelector):
+        sock.setblocking(False)
+        self.sock = sock
+        self.sel = sel
+        self.out = bytearray()
+        self.inbuf = bytearray()
+        self.mask = selectors.EVENT_READ
+        sel.register(sock, self.mask, ("client", self))
+
+    def push(self, line: bytes) -> None:
+        self.out += line
+        if len(self.out) > MAX_OUTBOX:
+            raise ClientDead("outbox overflow")
+        self.flush()
+
+    def flush(self) -> None:
+        while self.out:
+            try:
+                sent = self.sock.send(self.out)
+            except (BlockingIOError, InterruptedError):
+                break
+            except OSError as exc:
+                raise ClientDead(str(exc)) from exc
+            del self.out[:sent]
+        # EVENT_WRITE only while there is something to write: epoll here is
+        # level-triggered, so a permanent registration spins the loop at 100% CPU.
+        want = selectors.EVENT_READ | (selectors.EVENT_WRITE if self.out else 0)
+        if want != self.mask:
+            self.mask = want
+            self.sel.modify(self.sock, want, ("client", self))
+
+    def take_lines(self) -> list[str]:
+        """Read what is available and return whole lines. Clients may send a partial
+        line, or several in one packet."""
+        while True:
+            try:
+                chunk = self.sock.recv(4096)
+            except (BlockingIOError, InterruptedError):
+                break
+            except OSError as exc:
+                raise ClientDead(str(exc)) from exc
+            if not chunk:
+                raise ClientDead("closed")
+            self.inbuf += chunk
+        lines = []
+        while b"\n" in self.inbuf:
+            raw, _, rest = self.inbuf.partition(b"\n")
+            self.inbuf = bytearray(rest)
+            if raw.strip():
+                lines.append(raw.decode("utf-8", "replace"))
+        if len(self.inbuf) > MAX_LINE:
+            raise ClientDead("line too long")
+        return lines
+
+    def close(self) -> None:
+        with contextlib.suppress(KeyError, OSError):
+            self.sel.unregister(self.sock)
+        with contextlib.suppress(OSError):
+            self.sock.close()
+
+
+class Daemon:
+    def __init__(self, args):
+        self.args = args
+        self.mac = args.mac.upper()
+        self.sel = selectors.DefaultSelector()
+        self.clients: list[Client] = []
+        self.buds: Buds | None = None
+        self.stop = False
+
+        # published state
+        self.connected = False
+        self.reason: str | None = "starting"
+        self.battery: dict[str, dict] = {}
+        self.placement: dict[str, dict] = {}
+        self.anc = ""
+        self.firmware = ""
+        self.protocol = ""
+        self.components: dict[str, dict] = {}
+        self.host: dict | None = None
+        self.seq = 0
+        self.src = "poll"
+        self.last_digest: str | None = None
+
+        # timers (monotonic deadlines; None = not armed)
+        self.next_placement = 0.0
+        self.next_battery = 0.0
+        self.next_attempt = 0.0
+        self.next_publish: float | None = None
+        self.extra_battery: list[float] = []
+        self.disconnected_at = time.monotonic()
+        self.idle_since: float | None = time.monotonic()
+        self.last_refresh = 0.0
+
+        # Last-known levels survive a reboot, so serve them (stale) at once rather
+        # than making a freshly started daemon look like it knows nothing.
+        for name, info in load_cache(self.mac).items():
+            self.battery[name] = {"percent": info.get("percent", -1),
+                                  "charging": bool(info.get("charging")),
+                                  "live": False, "seen": info.get("seen", 0)}
+
+        self.bluez_up: bool | None = None
+        self.attempt_backoff = Backoff(1, 2, 5, 10, 20, 30)
+        # EBUSY is the daemon-restart path: systemd comes back in 5s while the buds
+        # still hold the old link, so this must stay fast and must not escalate the
+        # long backoff.
+        self.busy_backoff = Backoff(2, 3, 4, 5)
+        self.pending_raw: list[tuple[int, str | None, Client, float]] = []
+
+    # ------------------------------------------------------------ lifecycle
+
+    def setup(self) -> None:
+        path = Path(self.args.socket)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Hold the lock for the process lifetime, and only unlink a stale socket once
+        # we know no other daemon owns it.
+        self.lock = open(path.with_suffix(".lock"), "a")
+        try:
+            fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise SystemExit(f"another cmf-budsd already holds {self.lock.name}")
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(path)
+
+        self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.listener.bind(str(path))
+        self.listener.listen(8)
+        self.listener.setblocking(False)
+        self.sel.register(self.listener, selectors.EVENT_READ, ("listen", None))
+        self.socket_path = path
+
+        # Self-pipe so a signal breaks out of select() immediately.
+        self.wake_r, self.wake_w = socket.socketpair()
+        for sock in (self.wake_r, self.wake_w):
+            sock.setblocking(False)
+        signal.set_wakeup_fd(self.wake_w.fileno())
+        self.sel.register(self.wake_r, selectors.EVENT_READ, ("wake", None))
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(sig, lambda *_: setattr(self, "stop", True))
+
+        log(f"listening on {path} for {self.mac}")
+
+    def teardown(self) -> None:
+        for client in list(self.clients):
+            client.close()
+        self.drop_link("shutdown")
+        with contextlib.suppress(Exception):
+            signal.set_wakeup_fd(-1)
+        with contextlib.suppress(OSError):
+            self.listener.close()
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(self.socket_path)
+        log("stopped")
+
+    def run(self) -> int:
+        self.setup()
+        try:
+            while not self.stop:
+                timeout = max(0.0, min(self.deadline() - time.monotonic(), 5.0))
+                for key, mask in self.sel.select(timeout):
+                    kind, obj = key.data
+                    if kind == "listen":
+                        self.accept()
+                    elif kind == "client":
+                        self.client_io(obj, mask)
+                    elif kind == "buds":
+                        self.pump()
+                    elif kind == "wake":
+                        with contextlib.suppress(OSError):
+                            self.wake_r.recv(64)
+                self.run_timers()
+        finally:
+            self.teardown()
+        return 0
+
+    def deadline(self) -> float:
+        candidates = [self.next_attempt if not self.buds else float("inf")]
+        if self.buds:
+            candidates += [self.next_placement, self.next_battery]
+            candidates += self.extra_battery
+        if self.next_publish is not None:
+            candidates.append(self.next_publish)
+        if self.pending_raw:
+            candidates.append(min(item[3] for item in self.pending_raw))
+        if self.idle_since is not None and self.buds and self.args.idle_release > 0:
+            candidates.append(self.idle_since + self.args.idle_release)
+        return min(candidates) if candidates else time.monotonic() + 5.0
+
+    # ------------------------------------------------------------ clients
+
+    def accept(self) -> None:
+        try:
+            sock, _ = self.listener.accept()
+        except OSError:
+            return
+        client = Client(sock, self.sel)
+        self.clients.append(client)
+        self.idle_since = None
+        # Send current state at once so a new panel renders instead of waiting for a
+        # change that may be minutes away.
+        try:
+            client.push(self.state_line())
+        except ClientDead:
+            self.drop_client(client, "died on hello")
+            return
+        # A client just arrived: if we released the link while idle, get it back.
+        if not self.buds:
+            self.next_attempt = min(self.next_attempt, time.monotonic())
+
+    def drop_client(self, client: Client, why: str) -> None:
+        if client in self.clients:
+            self.clients.remove(client)
+        client.close()
+        self.pending_raw = [p for p in self.pending_raw if p[2] is not client]
+        if not self.clients:
+            self.idle_since = time.monotonic()
+        log(f"client gone ({why}); {len(self.clients)} left")
+
+    def client_io(self, client: Client, mask: int) -> None:
+        try:
+            if mask & selectors.EVENT_WRITE:
+                client.flush()
+            if mask & selectors.EVENT_READ:
+                for line in client.take_lines():
+                    self.handle_command(client, line)
+        except ClientDead as exc:
+            self.drop_client(client, str(exc))
+
+    def broadcast(self, line: bytes) -> None:
+        for client in list(self.clients):
+            try:
+                client.push(line)
+            except ClientDead as exc:
+                self.drop_client(client, str(exc))
+
+    def reply(self, client: Client, obj: dict) -> None:
+        try:
+            client.push(json.dumps(obj, separators=(",", ":")).encode() + b"\n")
+        except ClientDead as exc:
+            self.drop_client(client, str(exc))
+
+    def handle_command(self, client: Client, line: str) -> None:
+        try:
+            msg = json.loads(line)
+            if not isinstance(msg, dict):
+                raise ValueError("not an object")
+        except ValueError as exc:
+            self.reply(client, {"type": "error", "msg": f"bad json: {exc}"})
+            return
+        cmd = msg.get("cmd")
+        ident = msg.get("id")
+
+        if cmd == "refresh":
+            now = time.monotonic()
+            # One link, one user with a mouse: do not let a click-spammer flood it.
+            if now - self.last_refresh < 1.0:
+                self.reply(client, {"type": "error", "id": ident, "msg": "rate limited"})
+                return
+            self.last_refresh = now
+            self.next_placement = now
+            self.next_battery = now
+            self.reply(client, {"type": "reply", "id": ident, "ok": True, "cmd": "refresh"})
+            return
+
+        if cmd == "raw":
+            if not self.args.allow_raw:
+                self.reply(client, {"type": "error", "id": ident,
+                                    "msg": "raw disabled; start with --allow-raw"})
+                return
+            try:
+                command = int(str(msg.get("command", "")), 16)
+            except ValueError:
+                self.reply(client, {"type": "error", "id": ident, "msg": "bad command id"})
+                return
+            # The whole point: any process of this user can open this socket, and a
+            # read sweep once reset the link. Writes are not reachable from here.
+            if command not in QUERY_RANGE:
+                self.reply(client, {"type": "error", "id": ident,
+                                    "msg": f"0x{command:04x} outside the query range 0xc000-0xcfff"})
+                return
+            if not self.buds:
+                self.reply(client, {"type": "error", "id": ident, "msg": "buds not connected"})
+                return
+            try:
+                self.buds.send(command)
+            except BudsGone as exc:
+                self.lost_link(str(exc))
+                self.reply(client, {"type": "error", "id": ident, "msg": "link dropped"})
+                return
+            self.pending_raw.append((command, ident, client, time.monotonic() + 2.0))
+            return
+
+        self.reply(client, {"type": "error", "id": ident, "msg": f"unknown cmd {cmd!r}"})
+
+    # ------------------------------------------------------------ the link
+
+    def drop_link(self, why: str) -> None:
+        if not self.buds:
+            return
+        with contextlib.suppress(KeyError, OSError):
+            self.sel.unregister(self.buds.sock)
+        self.buds.close()
+        self.buds = None
+        log(f"link closed ({why})")
+
+    def lost_link(self, why: str) -> None:
+        self.drop_link(why)
+        self.connected = False
+        self.reason = "gone"
+        self.placement = {}          # volatile: we no longer know where anything is
+        for info in self.battery.values():
+            info["live"] = False     # keep the percentages, mark them stale
+        self.disconnected_at = time.monotonic()
+        self.next_attempt = time.monotonic() + self.attempt_backoff.next()
+        self.mark_changed("poll")
+
+    def maybe_connect(self, now: float) -> None:
+        if self.buds or now < self.next_attempt:
+            return
+        # With no clients there is nothing to know, so do not hold the buds' only
+        # NTAPP link - the phone's Nothing X app wants it too.
+        if self.args.idle_release > 0 and not self.clients:
+            self.next_attempt = now + 5.0
+            return
+
+        up = bluez_connected(self.mac)
+        if up is not True:
+            self.bluez_up = up
+            reason = "bluez-disconnected" if up is False else "bluez-unknown"
+            if self.reason != reason:
+                log(f"idle: {reason} - not attempting RFCOMM")
+                self.reason = reason
+                self.connected = False
+                self.mark_changed("poll")
+            since = now - self.disconnected_at
+            self.next_attempt = now + (2.0 if since < 60 else 10.0)
+            return
+
+        if self.bluez_up is not True:
+            # False->true edge: BlueZ marks connected once the first profile is up,
+            # which is before the buds' SPP server is listening. A fresh ACL is new
+            # information, so the backoffs start over.
+            self.bluez_up = True
+            self.attempt_backoff.reset()
+            self.busy_backoff.reset()
+            self.next_attempt = now + 1.5
+            return
+
+        buds = Buds(self.mac, timeout=self.args.connect_timeout)
+        try:
+            buds.connect(retries=1)
+        except BudsBusy:
+            if self.reason != "busy":
+                log("NTAPP channel busy - another client holds it; retrying")
+            self.reason = "busy"
+            self.connected = False
+            self.next_attempt = now + self.busy_backoff.next()
+            self.mark_changed("poll")
+            return
+        except BudsError as exc:
+            self.reason = "no-channel" if "channel" in str(exc).lower() else "gone"
+            self.connected = False
+            self.next_attempt = now + self.attempt_backoff.next()
+            log(f"connect failed: {str(exc).splitlines()[0]}")
+            self.mark_changed("poll")
+            return
+
+        buds.set_nonblocking()
+        self.buds = buds
+        self.sel.register(buds.sock, selectors.EVENT_READ, ("buds", None))
+        self.connected = True
+        self.reason = None
+        self.attempt_backoff.reset()
+        self.busy_backoff.reset()
+        log(f"connected on channel {buds.channel}")
+        # The static facts (firmware, serials, protocol) are fetched once per link so
+        # `cmf-buds info` can be served entirely from here.
+        self.poll(CMD_BATTERY, CMD_WEAR_STATE, CMD_ANC_MODE, CMD_FIRMWARE,
+                  CMD_PROTOCOL_VERSION, CMD_COMPONENT_INFO, CMD_PAIRED_DEVICES)
+        self.next_placement = time.monotonic() + self.args.interval
+        self.next_battery = time.monotonic() + self.args.battery_interval
+        self.mark_changed("poll")
+
+    def poll(self, *commands: int) -> None:
+        if not self.buds:
+            return
+        try:
+            for command in commands:
+                self.buds.send(command)
+        except BudsGone as exc:
+            self.lost_link(str(exc))
+
+    def pump(self) -> None:
+        if not self.buds:
+            return
+        try:
+            frames = self.buds.drain_nb()
+        except BudsGone as exc:
+            self.lost_link(str(exc))
+            return
+        for frame in frames:
+            if not frame.usable:
+                continue
+            self.ingest(frame)
+
+    def ingest(self, frame) -> None:
+        src = "push" if frame.pushed else "poll"
+        command = frame.command
+
+        for item in list(self.pending_raw):
+            if item[0] == command & ~0x2000 or item[0] == command:
+                self.reply(item[2], {"type": "reply", "id": item[1], "ok": True,
+                                     "cmd": "raw", "command": f"{command:04x}",
+                                     "payload": frame.payload.hex(" ")})
+                self.pending_raw.remove(item)
+
+        if command in (CMD_BATTERY, EVT_BATTERY):
+            levels = decode_battery(frame.payload)
+            if levels:
+                self.apply_battery(levels, authoritative=not frame.pushed)
+                self.mark_changed(src)
+        elif command in (CMD_WEAR_STATE, EVT_WEAR_STATE):
+            states = decode_wear(frame.payload)
+            if states:
+                self.apply_placement(states, authoritative=not frame.pushed)
+                self.mark_changed(src)
+        elif command in (CMD_ANC_MODE, EVT_ANC_MODE):
+            self.anc = decode_anc(frame.payload)
+            self.mark_changed(src)
+        elif command == CMD_FIRMWARE:
+            self.firmware = frame.payload.decode("ascii", "replace").strip("\x00")
+            self.mark_changed(src)
+        elif command == CMD_PROTOCOL_VERSION:
+            self.protocol = frame.payload.decode("ascii", "replace").strip("\x00")
+            self.mark_changed(src)
+        elif command == CMD_COMPONENT_INFO:
+            self.components = decode_component_info(frame.payload)
+            self.mark_changed(src)
+        elif command == CMD_PAIRED_DEVICES:
+            hosts = decode_paired(frame.payload[4:])
+            self.host = hosts[0] if hosts else None
+            self.mark_changed(src)
+
+    def apply_battery(self, levels: dict, authoritative: bool) -> None:
+        """A polled 0xc007 reply says which components are reporting; a pushed 0xe001
+        is a partial update where absence means nothing."""
+        now = int(time.time())
+        for name, info in levels.items():
+            self.battery[name] = {"percent": info["percent"],
+                                  "charging": info["charging"],
+                                  "live": True, "seen": now}
+        if authoritative:
+            for name, info in self.battery.items():
+                if name not in levels:
+                    info["live"] = False
+        save_cache(self.mac, levels, now)
+
+    def apply_placement(self, states: dict, authoritative: bool) -> None:
+        was_docked = {n: self.placement.get(n, {}).get("where") == "in-case"
+                      for n in ("left", "right")}
+        if authoritative:
+            self.placement = states
+        else:
+            self.placement.update(states)
+        # The case only reports its own level while a bud is docked, and that level
+        # arrives in a push around the docking moment - so chase it.
+        now_docked = {n: self.placement.get(n, {}).get("where") == "in-case"
+                      for n in ("left", "right")}
+        if was_docked != now_docked:
+            base = time.monotonic()
+            self.extra_battery += [base + 1.0, base + 5.0]
+
+    # ------------------------------------------------------------ publishing
+
+    def digest(self) -> str:
+        """Device-derived values only. A timestamp or an age here would make every
+        poll a 'change' and stream forever on an idle system."""
+        return json.dumps({
+            "connected": self.connected,
+            "reason": self.reason,
+            # Fixed order with None for missing, so a component disappearing counts.
+            "battery": [(self.battery.get(n) or {}).get(k)
+                        for n in COMPONENT_ORDER for k in ("percent", "charging", "live")],
+            "placement": [(self.placement.get(n) or {}).get(k)
+                          for n in COMPONENT_ORDER for k in ("where", "online", "raw")],
+            "anc": self.anc,
+            "firmware": self.firmware,
+            "protocol": self.protocol,
+            "components": self.components,
+            "host": self.host,
+        }, sort_keys=True, separators=(",", ":"))
+
+    def mark_changed(self, src: str) -> None:
+        self.src = src
+        if self.next_publish is None:
+            self.next_publish = time.monotonic() + PUBLISH_DEBOUNCE
+
+    def state_line(self) -> bytes:
+        # seq advances per published change, not per line written, so a client that
+        # sees a gap really did miss a broadcast. A new client's hello repeats the
+        # current seq rather than burning one.
+        return json.dumps({
+            "type": "state", "seq": self.seq, "ts": int(time.time()), "src": self.src,
+            "connected": self.connected, "reason": self.reason,
+            "battery": self.battery, "placement": self.placement,
+            "anc": self.anc, "firmware": self.firmware,
+            "protocol": self.protocol, "components": self.components,
+            "host": self.host,
+        }, separators=(",", ":")).encode() + b"\n"
+
+    def publish(self) -> None:
+        digest = self.digest()
+        if digest == self.last_digest:
+            return
+        self.last_digest = digest
+        self.seq += 1
+        self.broadcast(self.state_line())
+
+    # ------------------------------------------------------------ timers
+
+    def run_timers(self) -> None:
+        now = time.monotonic()
+
+        if self.buds:
+            if now >= self.next_placement:
+                # Mandatory, not a fallback: the buds push when a bud leaves an ear
+                # but stay silent when one goes in.
+                self.poll(CMD_WEAR_STATE)
+                self.next_placement = now + self.args.interval
+            if now >= self.next_battery:
+                self.poll(CMD_BATTERY, CMD_ANC_MODE)
+                self.next_battery = now + self.args.battery_interval
+            due = [t for t in self.extra_battery if now >= t]
+            if due:
+                self.extra_battery = [t for t in self.extra_battery if now < t]
+                self.poll(CMD_BATTERY)
+
+            if (self.args.idle_release > 0 and self.idle_since is not None
+                    and now - self.idle_since >= self.args.idle_release):
+                self.drop_link("idle, releasing the link")
+                self.connected = False
+                self.reason = "idle"
+                self.placement = {}
+                for info in self.battery.values():
+                    info["live"] = False
+                self.next_attempt = now + 5.0
+                self.mark_changed("poll")
+        else:
+            self.maybe_connect(now)
+
+        for item in list(self.pending_raw):
+            if now >= item[3]:
+                self.pending_raw.remove(item)
+                self.reply(item[2], {"type": "error", "id": item[1], "msg": "no reply"})
+
+        if self.next_publish is not None and now >= self.next_publish:
+            self.next_publish = None
+            self.publish()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="cmf-budsd", description=__doc__.splitlines()[0],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("-m", "--mac", default=DEFAULT_MAC)
+    parser.add_argument("--socket", default=str(DEFAULT_SOCKET))
+    parser.add_argument("-i", "--interval", type=float, default=3.0,
+                        help="seconds between placement polls (default 3)")
+    parser.add_argument("--battery-interval", type=float, default=60.0,
+                        help="seconds between battery/ANC polls (default 60)")
+    parser.add_argument("--connect-timeout", type=float, default=5.0)
+    parser.add_argument("--idle-release", type=float, default=60.0,
+                        help="drop the link after N seconds with no clients, so the "
+                             "phone app can have it; 0 disables (default 60)")
+    parser.add_argument("--allow-raw", action="store_true",
+                        help="permit {\"cmd\":\"raw\"}; still restricted to queries")
+    args = parser.parse_args()
+    try:
+        return Daemon(args).run()
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,473 @@
+#!/usr/bin/python3
+"""cmf-buds - read CMF / Nothing earbuds: left bud, right bud and case separately.
+
+BlueZ only exposes a single aggregated "Battery Percentage" for TWS earbuds. The
+buds report each component individually over the vendor RFCOMM service the Nothing
+X app uses ("NTAPP"), which is what this reads. See PROTOCOL.md.
+
+The buds accept only ONE connection on that channel, so if `cmf-budsd` is running
+this talks to the daemon instead of the device, and several consumers can coexist.
+Without the daemon it opens the link directly, exactly as before.
+
+The system python is hardcoded on purpose: socket.AF_BLUETOOTH is only present in
+an interpreter built against the bluetooth headers, which a mise/pyenv python is
+usually not.
+
+  cmf-buds                 per-component battery
+  cmf-buds --json          same, machine readable
+  cmf-buds info            firmware, serials, ANC mode, placement, connected host
+  cmf-buds watch           follow state changes
+  cmf-buds waybar          one-line JSON for a waybar custom module
+  cmf-buds raw c007 [hex]  send a query and dump the reply (direct link only)
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import socket
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from cmfbuds import (  # noqa: E402
+    CMD_ANC_MODE, CMD_BATTERY, CMD_COMPONENT_INFO, CMD_FIRMWARE,
+    CMD_PAIRED_DEVICES, CMD_PROTOCOL_VERSION, CMD_WEAR_STATE, COMPONENT_ORDER,
+    DEFAULT_MAC, EVT_ANC_MODE, EVT_BATTERY, EVT_WEAR_STATE, MASK_RSP_CODE, Buds,
+    BudsError, Frame, decode_anc, decode_battery, decode_component_info,
+    decode_paired, decode_wear, encode, find_channel, fmt_age, fmt_placement,
+    load_cache, save_cache,
+)
+
+RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+DAEMON_SOCKET = Path(os.environ.get("CMF_BUDS_SOCKET", RUNTIME_DIR / "cmf-buds.sock"))
+
+LABELS = {"left": "Left  ", "right": "Right ", "case": "Case  "}
+
+
+# ---------------------------------------------------------------- daemon client
+
+
+def daemon_connect(connect_timeout: float = 0.5) -> socket.socket | None:
+    """Open the daemon socket, or None if it is not there.
+
+    Every timeout here is short on purpose: a wedged daemon must degrade to the
+    direct link rather than hang the CLI.
+    """
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(connect_timeout)
+        sock.connect(str(DAEMON_SOCKET))
+    except OSError:
+        sock.close()
+        return None
+    return sock
+
+
+def read_line(sock: socket.socket, timeout: float = 2.0) -> dict | None:
+    sock.settimeout(timeout)
+    buf = b""
+    while b"\n" not in buf:
+        try:
+            chunk = sock.recv(4096)
+        except OSError:
+            return None
+        if not chunk or len(buf) > 1 << 20:
+            return None
+        buf += chunk
+    try:
+        return json.loads(buf.split(b"\n", 1)[0])
+    except ValueError:
+        return None
+
+
+def iter_lines(sock: socket.socket):
+    buf = b""
+    sock.settimeout(None)
+    while True:
+        try:
+            chunk = sock.recv(4096)
+        except OSError:
+            return
+        if not chunk:
+            return
+        buf += chunk
+        while b"\n" in buf:
+            raw, _, buf = buf.partition(b"\n")
+            if not raw.strip():
+                continue
+            try:
+                yield json.loads(raw)
+            except ValueError:
+                continue
+
+
+def daemon_state(args) -> dict | None:
+    """One state line from the daemon, or None to fall through to the device."""
+    if args.no_daemon:
+        return None
+    sock = daemon_connect()
+    if sock is None:
+        return None
+    try:
+        state = read_line(sock)
+    finally:
+        sock.close()
+    return state if isinstance(state, dict) and state.get("type") == "state" else None
+
+
+# ---------------------------------------------------------------- gathering
+
+
+def read_batteries(buds: Buds) -> dict[str, dict]:
+    """Merge the polled reply with any events pushed in the same window."""
+    merged: dict[str, dict] = {}
+    for frame in buds.query(CMD_BATTERY, window=1.5):
+        if frame.command in (CMD_BATTERY, EVT_BATTERY) and frame.usable:
+            merged.update(decode_battery(frame.payload))
+    return merged
+
+
+def battery_levels(args) -> tuple[dict[str, dict], str]:
+    """{name: {percent, charging, live, seen}} plus where it came from."""
+    state = daemon_state(args)
+    if state is not None:
+        return dict(state.get("battery") or {}), "daemon"
+
+    now = int(time.time())
+    with Buds(args.mac) as buds:
+        live = read_batteries(buds)
+    save_cache(args.mac, live, now)
+    out = {n: {**v, "live": True, "seen": now} for n, v in live.items()}
+    for name, info in load_cache(args.mac).items():
+        out.setdefault(name, {**info, "live": False})
+    return out, "device"
+
+
+def info_bundle(args) -> dict:
+    state = daemon_state(args)
+    if state is not None:
+        return {
+            "mac": args.mac, "channel": find_channel(args.mac), "source": "daemon",
+            "connected": state.get("connected"), "reason": state.get("reason"),
+            "firmware": state.get("firmware", ""), "protocol": state.get("protocol", ""),
+            "battery": state.get("battery") or {}, "components": state.get("components") or {},
+            "placement": state.get("placement") or {}, "anc": state.get("anc", ""),
+            "host": state.get("host"),
+        }
+
+    def first(command, decoder, default, extra=()):
+        for frame in buds.query(command, window=1.5):
+            if frame.command in (command, *extra) and frame.usable:
+                return decoder(frame.payload)
+        return default
+
+    with Buds(args.mac) as buds:
+        batteries = read_batteries(buds)
+        components = first(CMD_COMPONENT_INFO, decode_component_info, {})
+        placement = first(CMD_WEAR_STATE, decode_wear, {}, (EVT_WEAR_STATE,))
+        anc = first(CMD_ANC_MODE, decode_anc, "", (EVT_ANC_MODE,))
+        text = lambda p: p.decode("ascii", "replace").strip("\x00")  # noqa: E731
+        firmware = first(CMD_FIRMWARE, text, "")
+        protocol = first(CMD_PROTOCOL_VERSION, text, "")
+        hosts = first(CMD_PAIRED_DEVICES, lambda p: decode_paired(p[4:]), [])
+        channel = buds.channel
+
+    now = int(time.time())
+    save_cache(args.mac, batteries, now)
+    return {
+        "mac": args.mac, "channel": channel, "source": "device",
+        "connected": True, "reason": None,
+        "firmware": firmware, "protocol": protocol,
+        "battery": {n: {**v, "live": True, "seen": now} for n, v in batteries.items()},
+        "components": components, "placement": placement, "anc": anc,
+        "host": hosts[0] if hosts else None,
+    }
+
+
+# ---------------------------------------------------------------- output
+
+
+def bar(percent: int, width: int = 10) -> str:
+    filled = round(max(0, min(100, percent)) / 100 * width)
+    return "█" * filled + "░" * (width - filled)
+
+
+def battery_rows(levels: dict[str, dict], now: float):
+    for name in COMPONENT_ORDER:
+        info = levels.get(name)
+        if not info:
+            continue
+        pct = info.get("percent", -1)
+        if pct < 0:
+            continue
+        flag = " ⚡charging" if info.get("charging") else ""
+        stamp = ""
+        if not info.get("live", True):
+            stamp = f"  (last seen {fmt_age(now - info.get('seen', now))})"
+        yield f"{LABELS[name]} {bar(pct)} {pct:3d}%{flag}{stamp}"
+
+
+def cmd_battery(args) -> int:
+    levels, _ = battery_levels(args)
+    now = time.time()
+
+    if args.json:
+        out = {}
+        for name in COMPONENT_ORDER:
+            info = levels.get(name)
+            if not info:
+                continue
+            out[name] = dict(info)
+            if not info.get("live", True):
+                out[name]["age"] = int(now - info.get("seen", now))
+        print(json.dumps(out, indent=2, ensure_ascii=False))
+        return 0
+
+    rows = list(battery_rows(levels, now))
+    if not rows:
+        print("no battery information available")
+        return 1
+    print("\n".join(rows))
+    return 0
+
+
+def cmd_info(args) -> int:
+    bundle = info_bundle(args)
+    if args.json:
+        print(json.dumps(bundle, indent=2, ensure_ascii=False))
+        return 0
+
+    now = time.time()
+    print(f"CMF/Nothing earbuds  {bundle['mac']}   (via {bundle['source']})")
+    if not bundle["connected"]:
+        print(f"  link            not connected ({bundle['reason'] or 'unknown'})")
+    print(f"  firmware        {bundle['firmware'] or '?'}   "
+          f"(protocol {bundle['protocol'] or '?'})")
+    print(f"  ANC mode        {bundle['anc'] or '?'}")
+    print()
+    for name in COMPONENT_ORDER:
+        bits = []
+        info = (bundle["battery"] or {}).get(name)
+        if info and info.get("percent", -1) >= 0:
+            age = "" if info.get("live", True) else f" ({fmt_age(now - info.get('seen', now))})"
+            bits.append(f"{info['percent']:3d}%" +
+                        (" charging" if info.get("charging") else "") + age)
+        if name in (bundle["placement"] or {}):
+            bits.append(fmt_placement(bundle["placement"][name]))
+        comp = (bundle["components"] or {}).get(name) or {}
+        if comp.get("firmware"):
+            bits.append(f"fw {comp['firmware']}")
+        if comp.get("serial"):
+            bits.append(f"sn {comp['serial']}")
+        print(f"  {LABELS[name]}      {'  |  '.join(bits) if bits else 'not reporting'}")
+    if bundle["host"]:
+        print()
+        print(f"  connected host  {bundle['host']['mac']}  {bundle['host']['name']}")
+    return 0
+
+
+# ---------------------------------------------------------------- watch
+
+
+def describe_battery(levels: dict) -> str:
+    return "  ".join(
+        f"{n}={levels[n]['percent']}%" + (" charging" if levels[n].get("charging") else "")
+        + ("" if levels[n].get("live", True) else " stale")
+        for n in COMPONENT_ORDER if n in levels and levels[n].get("percent", -1) >= 0
+    )
+
+
+def describe_placement(states: dict) -> str:
+    # Always show the raw byte: the placement bits are reverse-engineered, so a
+    # wrong-looking line needs to carry its own evidence.
+    return "  ".join(f"{n}=[{fmt_placement(states[n], show_raw=True)}]"
+                     for n in COMPONENT_ORDER if n in states)
+
+
+def watch_via_daemon(args, sock) -> int:
+    print(f"following {DAEMON_SOCKET} - Ctrl-C to stop", file=sys.stderr)
+    last: dict[str, str] = {}
+
+    def emit(kind: str, text: str, src: str) -> None:
+        if not text or last.get(kind) == text:
+            return
+        last[kind] = text
+        print(f"{time.strftime('%H:%M:%S')}  {kind:9s}  {text}   ({src})")
+        sys.stdout.flush()
+
+    for obj in iter_lines(sock):
+        if obj.get("type") == "error":
+            print(f"{time.strftime('%H:%M:%S')}  error      {obj.get('msg')}")
+            continue
+        if obj.get("type") != "state":
+            continue
+        src = obj.get("src", "?")
+        # The link's own state is something only the daemon can report.
+        emit("link", "connected" if obj.get("connected")
+             else f"disconnected ({obj.get('reason') or 'unknown'})", src)
+        emit("battery", describe_battery(obj.get("battery") or {}), src)
+        emit("placement", describe_placement(obj.get("placement") or {}), src)
+        emit("anc", obj.get("anc") or "", src)
+    print("daemon closed the connection", file=sys.stderr)
+    return 1
+
+
+def watch_direct(args) -> int:
+    # The buds push 0xe002 when a bud LEAVES an ear, but not when one is put in - so
+    # a purely event-driven watch never shows in-ear, while a plain 0xc00a query
+    # reads it correctly. Hence: poll on a timer as well as listen for pushes, and
+    # print only when the decoded state actually changes.
+    with Buds(args.mac) as buds:
+        print(f"listening on {args.mac} ch {buds.channel}, polling every "
+              f"{args.interval:g}s - Ctrl-C to stop", file=sys.stderr)
+        last: dict[str, str] = {}
+        battery_every = max(1, round(args.battery_interval / args.interval))
+        tick = 0
+        next_poll = 0.0
+
+        def emit(frame: Frame) -> None:
+            if frame.command in (CMD_BATTERY, EVT_BATTERY):
+                levels = decode_battery(frame.payload)
+                save_cache(args.mac, levels)
+                kind, text = "battery", describe_battery(levels)
+            elif frame.command in (CMD_WEAR_STATE, EVT_WEAR_STATE):
+                kind, text = "placement", describe_placement(decode_wear(frame.payload))
+            elif frame.command in (CMD_ANC_MODE, EVT_ANC_MODE):
+                kind, text = "anc", decode_anc(frame.payload)
+            else:
+                kind, text = f"0x{frame.command:04x}", frame.payload.hex(" ")
+            if not text or last.get(kind) == text:
+                return
+            last[kind] = text
+            src = "push" if frame.pushed else "poll"
+            print(f"{time.strftime('%H:%M:%S')}  {kind:9s}  {text}   ({src})")
+            sys.stdout.flush()
+
+        while True:
+            now = time.monotonic()
+            if now >= next_poll:
+                buds.send(CMD_WEAR_STATE)
+                if tick % battery_every == 0:
+                    buds.send(CMD_BATTERY)
+                    buds.send(CMD_ANC_MODE)
+                tick += 1
+                next_poll = now + args.interval
+            if buds.wait_readable(max(0.05, next_poll - time.monotonic())):
+                for frame in buds.drain_nb():
+                    if frame.usable:
+                        emit(frame)
+
+
+def cmd_watch(args) -> int:
+    sock = None if args.no_daemon else daemon_connect()
+    if sock is not None:
+        try:
+            return watch_via_daemon(args, sock)
+        finally:
+            sock.close()
+    return watch_direct(args)
+
+
+# ---------------------------------------------------------------- waybar
+
+
+def cmd_waybar(args) -> int:
+    try:
+        levels, _ = battery_levels(args)
+    except BudsError:
+        levels = {}
+    now = time.time()
+
+    fresh = {n: v for n, v in levels.items()
+             if v.get("live", True) and v.get("percent", -1) >= 0}
+    if not fresh:
+        print(json.dumps({"text": "", "tooltip": "CMF Buds 2: disconnected",
+                          "class": "disconnected"}))
+        return 0
+
+    pcts = [fresh[n]["percent"] for n in ("left", "right") if n in fresh]
+    worst = min(pcts) if pcts else min(v["percent"] for v in fresh.values())
+    charging = any(v.get("charging") for v in fresh.values())
+    tip = []
+    for name in COMPONENT_ORDER:
+        info = levels.get(name)
+        if not info or info.get("percent", -1) < 0:
+            continue
+        age = "" if info.get("live", True) else f" ({fmt_age(now - info.get('seen', now))})"
+        tip.append(f"{name}: {info['percent']}%"
+                   + (" charging" if info.get("charging") else "") + age)
+    print(json.dumps({
+        "text": f"{'󰥉 ' if charging else ''}{worst}%",
+        "tooltip": "CMF Buds 2\n" + "\n".join(tip),
+        "percentage": worst,
+        "class": "charging" if charging else ("critical" if worst <= 15 else "normal"),
+    }, ensure_ascii=False))
+    return 0
+
+
+# ---------------------------------------------------------------- raw
+
+
+def cmd_raw(args) -> int:
+    command = int(args.command, 16)
+    payload = bytes.fromhex(args.payload) if args.payload else b""
+    with Buds(args.mac) as buds:
+        print(f">>> {encode(command, payload).hex(' ')}")
+        for frame in buds.query(command, payload, window=args.window):
+            flag = "" if frame.crc_ok else "  [CRC MISMATCH]"
+            status = "" if frame.ok else f"  [error code 0x{frame.control & MASK_RSP_CODE:02x}]"
+            print(f"<<< 0x{frame.command:04x}  {frame.payload.hex(' ') or '(empty)'}{status}{flag}")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="cmf-buds", description=__doc__.splitlines()[0],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("-m", "--mac", default=DEFAULT_MAC, help="device address")
+    parser.add_argument("--json", action="store_true", help="machine readable output")
+    parser.add_argument("--no-daemon", action="store_true",
+                        help="ignore cmf-budsd and open the link directly")
+    sub = parser.add_subparsers(dest="cmd")
+
+    sub.add_parser("battery", help="per-component battery (default)")
+    sub.add_parser("info", help="firmware, serials, ANC mode, placement, connected host")
+    watch = sub.add_parser("watch", help="follow state changes")
+    watch.add_argument("-i", "--interval", type=float, default=3.0,
+                       help="direct mode: seconds between placement polls (default 3)")
+    watch.add_argument("--battery-interval", type=float, default=60.0,
+                       help="direct mode: seconds between battery/ANC polls (default 60)")
+    sub.add_parser("waybar", help="JSON for a waybar custom module")
+    raw = sub.add_parser("raw", help="send a query and dump the reply")
+    raw.add_argument("command", help="command id in hex, e.g. c007")
+    raw.add_argument("payload", nargs="?", help="hex payload")
+    raw.add_argument("-w", "--window", type=float, default=1.5,
+                     help="seconds to collect replies")
+
+    args = parser.parse_args()
+    args.mac = args.mac.upper()
+    # `raw` always talks to the device: it is for protocol work, where the daemon's
+    # digested view is exactly what you do not want.
+    if args.cmd == "raw":
+        args.no_daemon = True
+    handler = {
+        None: cmd_battery, "battery": cmd_battery, "info": cmd_info,
+        "watch": cmd_watch, "waybar": cmd_waybar, "raw": cmd_raw,
+    }[args.cmd]
+    try:
+        return handler(args)
+    except BudsError as exc:
+        # The module raises so the daemon can carry on; the CLI is where it becomes
+        # a clean exit.
+        raise SystemExit(str(exc)) from exc
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())
