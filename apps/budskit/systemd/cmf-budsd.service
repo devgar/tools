@@ -1,0 +1,16 @@
+[Unit]
+Description=CMF Buds 2 per-component battery daemon
+# Deliberately no After=bluetooth.target: that is a system unit and gives a user
+# unit no ordering. The daemon's own backoff copes with bluetoothd starting late.
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+# Adjust to taste: %h/.nix-profile/bin/cmf-budsd when installed through
+# home.packages, or %h/.local/bin/cmf-budsd for a `just install` dev checkout.
+ExecStart=%h/.nix-profile/bin/cmf-budsd
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target
