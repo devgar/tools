@@ -1,0 +1,23 @@
+# Static musl binary on scratch. Build from this directory:
+#   just image
+
+FROM docker.io/library/rust:1-alpine AS build
+RUN apk add --no-cache musl-dev
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+# Cache dependencies separately from the sources.
+RUN mkdir src && echo 'fn main() {}' > src/main.rs \
+    && cargo build --release --locked \
+    && rm -rf src
+COPY src ./src
+RUN touch src/main.rs && cargo build --release --locked
+# scratch has no mkdir: prepare a /data owned by the runtime user so a fresh
+# named volume inherits the ownership.
+RUN mkdir -p /out/data && chown 65534:65534 /out/data
+
+FROM scratch
+COPY --from=build /src/target/release/matrix-listener /matrix-listener
+COPY --from=build --chown=65534:65534 /out/data /data
+USER 65534:65534
+VOLUME ["/data"]
+ENTRYPOINT ["/matrix-listener"]

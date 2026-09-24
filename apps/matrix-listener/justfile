@@ -1,0 +1,37 @@
+set dotenv-load
+
+alias b := build
+alias r := run
+alias t := test
+
+# Run the daemon locally with .env loaded
+run:
+    cargo run
+
+build:
+    cargo build --release
+
+test:
+    cargo test
+
+lint:
+    cargo fmt --check
+    cargo clippy --all-targets -- -D warnings
+
+image tag="matrix-listener":
+    docker build -f Containerfile -t {{tag}} .
+
+# Trigger a release via GitHub Actions (bump, tag, push ghcr image)
+# Usage: just release major|minor|patch
+release bump:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ ! "{{bump}}" =~ ^(major|minor|patch)$ ]]; then
+        echo "Error: argument must be major, minor or patch" >&2
+        exit 1
+    fi
+    branch="release/apps/matrix-listener/{{bump}}"
+    git checkout -b "$branch"
+    git push origin "$branch"
+    git checkout -
+    git branch -d "$branch"

@@ -1,0 +1,95 @@
+name: Release matrix-listener
+
+on:
+  push:
+    branches:
+      - "release/apps/matrix-listener/*"
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    name: Bump, tag & push image
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Parse bump type from branch name
+        id: bump
+        run: |
+          BUMP="${GITHUB_REF_NAME##*/}"
+          [[ "$BUMP" =~ ^(major|minor|patch)$ ]] \
+            || { echo "::error::Branch must end in major, minor or patch"; exit 1; }
+          echo "type=$BUMP" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt,clippy
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/matrix-listener/target
+          key: ${{ runner.os }}-cargo-ml-${{ hashFiles('apps/matrix-listener/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-ml-
+
+      - uses: cargo-bins/cargo-binstall@v1.17.9
+
+      - name: Install just & cargo-edit
+        run: cargo binstall just cargo-edit --no-confirm
+
+      - name: Lint & test
+        working-directory: apps/matrix-listener
+        run: just lint test
+
+      - name: Bump version
+        id: version
+        working-directory: apps/matrix-listener
+        run: |
+          cargo set-version --bump ${{ steps.bump.outputs.type }}
+          echo "next=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Commit, tag & push to main
+        run: |
+          git add apps/matrix-listener/Cargo.toml apps/matrix-listener/Cargo.lock
+          git commit -m "chore(apps/matrix-listener): bump version to ${{ steps.version.outputs.next }}"
+          git tag "matrix-listener-v${{ steps.version.outputs.next }}"
+          git push origin HEAD:${{ github.event.repository.default_branch }}
+          git push origin "matrix-listener-v${{ steps.version.outputs.next }}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push image
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/matrix-listener
+          file: apps/matrix-listener/Containerfile
+          push: true
+          tags: |
+            ghcr.io/devgar/matrix-listener:v${{ steps.version.outputs.next }}
+            ghcr.io/devgar/matrix-listener:latest
+
+      - name: Delete release branch
+        if: always()
+        run: git push origin --delete "${GITHUB_REF_NAME}" || true
