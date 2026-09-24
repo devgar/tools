@@ -1,0 +1,15 @@
+alias b := build
+alias t := test
+
+build:
+    cargo build --release
+
+test:
+    cargo test
+
+lint:
+    cargo fmt --check
+    cargo clippy --all-targets -- -D warnings
+
+image tag="matrix-listener":
+    docker build -f Containerfile -t {{tag}} .

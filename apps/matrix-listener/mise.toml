@@ -1,0 +1,6 @@
+
+[env]
+_.file = '.env'
+
+[tasks.run]
+run = "cargo run"
